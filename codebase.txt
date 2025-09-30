@@ -1,0 +1,4230 @@
+# Codebase Export for LLM
+# Total Files: 11
+# Total Tokens (cl100k_base): 48908
+# File List:
+# - ai-chatbot\app\layout.tsx
+# - ai-chatbot\app\page.tsx
+# - backend\app.py
+# - backend\client_report.py
+# - backend\daily_batch_processing.py
+# - backend\email_utils.py
+# - backend\executive_report.py
+# - backend\prompts.py
+
+<start ai-chatbot\app\layout.tsx>
+import type { Metadata } from 'next'
+import { GeistSans } from 'geist/font/sans'
+import { GeistMono } from 'geist/font/mono'
+import { Analytics } from '@vercel/analytics/next'
+import './globals.css'
+
+export const metadata: Metadata = {
+  title: 'v0 App',
+  description: 'Created with v0',
+  generator: 'v0.app',
+}
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode
+}>) {
+  return (
+    <html lang="en">
+      <body className={`font-sans ${GeistSans.variable} ${GeistMono.variable}`}>
+        {children}
+        <Analytics />
+      </body>
+    </html>
+  )
+}
+
+<end ai-chatbot\app\layout.tsx>
+
+<start ai-chatbot\app\page.tsx>
+"use client"
+
+import { useState, useRef } from "react"
+import { Button } from "@/components/ui/button"
+import { Input, Textarea } from "@/components/ui/input"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { MessageCircle, Calendar, Send, Plus, Mail, Clock, Sparkles, Edit, Trash2, User, Play, X } from "lucide-react"
+import { Markdown } from "@/components/ui/markdown"
+
+interface Message {
+  id: string
+  content: string
+  sender: "user" | "ai"
+  timestamp: Date
+  isStreaming?: boolean
+}
+
+interface Task {
+  id: string
+  prompt: string
+  schedule: string
+  emails: string[]
+  status: "pending" | "running" | "completed"
+}
+
+const sampleQuestions = [
+  "Show me the last 10 interactions with BankCo",
+  "Give me a comprehensive client health report of BankCo for the last 30 days",
+  "Have their been any client sentiment shifts between last month and this month?",
+  "Give me the latest on the HealthTech deal with BankCo",
+]
+
+export default function ChatbotInterface() {
+  const [messages, setMessages] = useState<Message[]>([])
+  const [inputValue, setInputValue] = useState("")
+  const [activeTab, setActiveTab] = useState<"chat" | "tasks">("chat")
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [taskPrompt, setTaskPrompt] = useState("")
+  const [taskSchedule, setTaskSchedule] = useState("")
+  const [taskEmails, setTaskEmails] = useState("")
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false)
+  const [editingTask, setEditingTask] = useState<Task | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
+
+  // Custom Loading Animation Component (Large version for initial streaming)
+  const LoadingAnimation = () => (
+    <div className="flex flex-col items-center justify-center space-y-4 p-6 bg-gradient-to-br from-primary/10 to-secondary/10 rounded-lg border border-primary/20">
+      <div className="relative">
+        <div className="w-20 h-20 border-4 border-primary/20 border-t-primary rounded-full animate-spin"></div>
+        <div className="absolute inset-0 w-20 h-20 border-4 border-transparent border-t-primary/80 rounded-full animate-ping"></div>
+        <Sparkles className="absolute inset-0 w-20 h-20 text-primary/30 animate-pulse" />
+        <div className="absolute -inset-1 w-22 h-22 bg-gradient-radial from-primary/20 to-transparent rounded-full animate-pulse blur-lg"></div>
+      </div>
+      <div className="text-center space-y-2">
+        <p className="text-base font-semibold text-foreground">Gathering data & thinking...</p>
+        <div className="flex justify-center space-x-1 text-primary">
+          <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0s' }}></div>
+          <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+          <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+        </div>
+      </div>
+    </div>
+  )
+
+  // Enhanced small loading for ongoing streaming
+  const StreamingIndicator = () => (
+    <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+      <div className="relative">
+        <Sparkles className="w-4 h-4 animate-spin" />
+        <div className="absolute -inset-1 w-6 h-6 border border-transparent border-t-primary/50 rounded-full animate-ping"></div>
+      </div>
+      <span>Gathering data & reasoning</span>
+      <div className="flex space-x-1 ml-2">
+        <div className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce"></div>
+        <div className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0.1s" }}></div>
+        <div className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0.2s" }}></div>
+      </div>
+    </div>
+  )
+
+  const stopStreaming = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    setIsLoading(false)
+  }
+
+  const sendMessageWithStreaming = async (message: string) => {
+    if (!message.trim() || isLoading) return
+
+    // Stop any existing stream
+    stopStreaming()
+
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      content: message,
+      sender: "user",
+      timestamp: new Date(),
+    }
+
+    setMessages((prev) => [...prev, userMessage])
+    setIsLoading(true)
+
+    // Create AI message placeholder
+    const aiMessageId = (Date.now() + 1).toString()
+    const aiMessage: Message = {
+      id: aiMessageId,
+      content: "",
+      sender: "ai",
+      timestamp: new Date(),
+      isStreaming: true,
+    }
+    setMessages((prev) => [...prev, aiMessage])
+
+    try {
+      const response = await fetch("http://localhost:8000/chat/stream", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ message }),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to connect to streaming endpoint")
+      }
+
+      if (response.body === null) {
+        throw new Error("No response body")
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split("\n")
+        buffer = lines.pop() || ""
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6)
+            if (data === "" || data === "[DONE]") continue
+
+            try {
+              const parsed = JSON.parse(data)
+              
+              if (parsed.error) {
+                throw new Error(parsed.error)
+              }
+              
+              if (parsed.done) {
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId ? { ...msg, isStreaming: false } : msg
+                  )
+                )
+                break
+              }
+              
+              if (parsed.content) {
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === aiMessageId
+                      ? { ...msg, content: msg.content + parsed.content }
+                      : msg
+                  )
+                )
+              }
+            } catch (e) {
+              console.error("Error parsing SSE data:", e)
+            }
+          }
+        }
+      }
+
+      // Ensure streaming stops
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === aiMessageId ? { ...msg, isStreaming: false } : msg
+        )
+      )
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        console.error("Streaming error:", error)
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === aiMessageId
+              ? {
+                  ...msg,
+                  content: `## Error\n\nFailed to stream response. Please ensure the backend is running with streaming support.\n\nError: ${error.message || error}`,
+                  isStreaming: false,
+                }
+              : msg
+          )
+        )
+      }
+    } finally {
+      setIsLoading(false)
+      abortControllerRef.current = null
+    }
+  }
+
+  const sendMessage = async () => {
+    const currentInput = inputValue
+    setInputValue("")
+    
+    // Always use streaming
+    await sendMessageWithStreaming(currentInput)
+  }
+
+  const handleSampleQuestion = async (question: string) => {
+    setActiveTab("chat")
+    // Always use streaming
+    await sendMessageWithStreaming(question)
+  }
+
+  const addTask = () => {
+    if (!taskPrompt.trim() || !taskSchedule.trim() || !taskEmails.trim()) return
+
+    if (editingTask) {
+      setTasks((prev) =>
+        prev.map((task) =>
+          task.id === editingTask.id
+            ? {
+                ...task,
+                prompt: taskPrompt,
+                schedule: taskSchedule,
+                emails: taskEmails.split(",").map((email) => email.trim()),
+              }
+            : task,
+        ),
+      )
+      setEditingTask(null)
+    } else {
+      const newTask: Task = {
+        id: Date.now().toString(),
+        prompt: taskPrompt,
+        schedule: taskSchedule,
+        emails: taskEmails.split(",").map((email) => email.trim()),
+        status: "pending",
+      }
+      setTasks((prev) => [...prev, newTask])
+    }
+
+    setTaskPrompt("")
+    setTaskSchedule("")
+    setTaskEmails("")
+    setIsTaskModalOpen(false)
+  }
+
+  const editTask = (task: Task) => {
+    setEditingTask(task)
+    setTaskPrompt(task.prompt)
+    setTaskSchedule(task.schedule)
+    setTaskEmails(task.emails.join(", "))
+    setIsTaskModalOpen(true)
+  }
+
+  const deleteTask = (taskId: string) => {
+    setTasks((prev) => prev.filter((task) => task.id !== taskId))
+  }
+
+  const runTask = (taskId: string) => {
+    setTasks((prev) => prev.map((task) => (task.id === taskId ? { ...task, status: "running" as const } : task)))
+
+    setTimeout(() => {
+      setTasks((prev) => prev.map((task) => (task.id === taskId ? { ...task, status: "completed" as const } : task)))
+    }, 3000)
+  }
+
+  const resetTaskModal = () => {
+    setTaskPrompt("")
+    setTaskSchedule("")
+    setTaskEmails("")
+    setEditingTask(null)
+  }
+
+  const resetToMainPage = () => {
+    stopStreaming()
+    setMessages([])
+    setActiveTab("chat")
+  }
+
+  return (
+    <div className="flex h-screen bg-background text-foreground dark">
+      {/* Left Sidebar - Removed streaming toggle */}
+      <div className="w-80 bg-sidebar border-r border-sidebar-border flex flex-col">
+        <div className="p-6 border-b border-sidebar-border">
+          <h1
+            className="text-xl font-bold text-sidebar-foreground flex items-center gap-2 cursor-pointer hover:text-primary transition-colors"
+            onClick={resetToMainPage}
+          >
+            <Sparkles className="w-6 h-6 text-primary" />
+            AI Platform
+          </h1>
+        </div>
+
+        <div className="p-4 space-y-2">
+          <Button
+            variant={activeTab === "chat" ? "default" : "ghost"}
+            className="w-full justify-start gap-3 h-12 cursor-pointer"
+            onClick={() => setActiveTab("chat")}
+          >
+            <MessageCircle className="w-5 h-5" />
+            Chat
+          </Button>
+          <Button
+            variant={activeTab === "tasks" ? "default" : "ghost"}
+            className="w-full justify-start gap-3 h-12 cursor-pointer"
+            onClick={() => setActiveTab("tasks")}
+          >
+            <Calendar className="w-5 h-5" />
+            Tasks
+          </Button>
+        </div>
+
+        <div className="flex-1 px-4 pb-4">
+          {activeTab === "chat" && (
+            <Card className="bg-card/50 border-border/50">
+              <CardHeader>
+                <CardTitle className="text-sm text-card-foreground">Recent Conversations</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-xs text-muted-foreground">Your chat history will appear here</p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 flex flex-col">
+        {activeTab === "chat" ? (
+          <>
+            {/* Messages Area */}
+            <div className="flex-1 overflow-hidden">
+              <ScrollArea className="h-full p-6">
+                <div className="space-y-6 max-w-4xl mx-auto">
+                  {messages.length === 0 && !isLoading && (
+                    <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-8">
+                      <div className="text-center space-y-4">
+                        <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto">
+                          <Sparkles className="w-8 h-8 text-primary" />
+                        </div>
+                        <h3 className="text-2xl font-semibold text-foreground">How can I help you today?</h3>
+                        <p className="text-muted-foreground max-w-md">
+                          Choose a sample question below or ask about your client relationships and business insights.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full max-w-2xl">
+                        {sampleQuestions.map((question, index) => (
+                          <Button
+                            key={index}
+                            variant="outline"
+                            className="h-auto p-4 text-left justify-start bg-card/50 border-border/50 hover:bg-card hover:border-primary/50 hover:text-foreground transition-all duration-200 cursor-pointer"
+                            onClick={() => handleSampleQuestion(question)}
+                            disabled={isLoading}
+                          >
+                            <div className="text-wrap text-sm leading-relaxed">{question}</div>
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Messages */}
+                  {messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`flex gap-4 ${message.sender === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      {message.sender === "ai" && (
+                        <Avatar className="w-10 h-10 bg-primary/10 border border-primary/20 shadow-sm">
+                          <AvatarFallback className="text-primary bg-transparent">
+                            <Sparkles className="w-5 h-5" />
+                          </AvatarFallback>
+                        </Avatar>
+                      )}
+                      <div
+                        className={`max-w-[70%] rounded-2xl p-4 shadow-sm ${
+                          message.sender === "user"
+                            ? "bg-primary text-primary-foreground ml-auto shadow-primary/20"
+                            : "bg-card border border-border/50 shadow-md"
+                        }`}
+                      >
+                        {message.sender === "ai" ? (
+                          <>
+                            {message.isStreaming && message.content === "" ? (
+                              <LoadingAnimation />
+                            ) : (
+                              <>
+                                <Markdown className="text-sm leading-relaxed font-medium">{message.content}</Markdown>
+                                {message.isStreaming && <StreamingIndicator />}
+                              </>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-sm leading-relaxed font-medium">{message.content}</p>
+                        )}
+                        {!message.isStreaming && (
+                          <p className="text-xs opacity-60 mt-3 font-normal">
+                            {message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </p>
+                        )}
+                      </div>
+                      {message.sender === "user" && (
+                        <Avatar className="w-10 h-10 bg-secondary/50 border border-border shadow-sm">
+                          <AvatarFallback className="text-secondary-foreground bg-transparent">
+                            <User className="w-5 h-5" />
+                          </AvatarFallback>
+                        </Avatar>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </div>
+
+            {/* Input Area */}
+            <div className="p-6 border-t border-border bg-card/30 backdrop-blur-sm">
+              <div className="max-w-4xl mx-auto">
+                <div className="flex gap-3">
+                  <Input
+                    placeholder="Type your message here..."
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyPress={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
+                    className="flex-1 bg-input border-border rounded-xl h-12 px-4"
+                    disabled={isLoading}
+                  />
+                  {isLoading ? (
+                    <Button
+                      onClick={stopStreaming}
+                      size="icon"
+                      variant="destructive"
+                      className="h-12 w-12 rounded-xl cursor-pointer"
+                    >
+                      <X className="w-5 h-5" />
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={sendMessage}
+                      size="icon"
+                      className="h-12 w-12 rounded-xl cursor-pointer"
+                      disabled={isLoading}
+                    >
+                      <Send className="w-5 h-5" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Task Management */}
+            <div className="p-6 border-b border-border bg-card/30 backdrop-blur-sm">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-semibold text-card-foreground flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-primary" />
+                    Task Management
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1">Create and manage your scheduled AI tasks</p>
+                </div>
+                <Dialog open={isTaskModalOpen} onOpenChange={setIsTaskModalOpen}>
+                  <DialogTrigger asChild>
+                    <Button className="cursor-pointer gap-2" onClick={resetTaskModal}>
+                      <Plus className="w-4 h-4" />
+                      Add Task
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>{editingTask ? "Edit Task" : "Create New Task"}</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="text-sm font-medium text-foreground">Task Prompt</label>
+                        <Textarea
+                          placeholder="Enter your detailed task prompt..."
+                          value={taskPrompt}
+                          onChange={(e) => setTaskPrompt(e.target.value)}
+                          className="mt-1 bg-input border-border min-h-[100px] resize-none"
+                          rows={4}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium text-foreground">Schedule</label>
+                        <Input
+                          placeholder="e.g., Daily at 9 AM"
+                          value={taskSchedule}
+                          onChange={(e) => setTaskSchedule(e.target.value)}
+                          className="mt-1 bg-input border-border"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium text-foreground">Email Recipients</label>
+                        <Input
+                          placeholder="email1@example.com, email2@example.com"
+                          value={taskEmails}
+                          onChange={(e) => setTaskEmails(e.target.value)}
+                          className="mt-1 bg-input border-border"
+                        />
+                      </div>
+                      <Button onClick={addTask} className="w-full cursor-pointer">
+                        {editingTask ? "Update Task" : "Add Task"}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </div>
+
+            {/* Tasks List */}
+            <div className="flex-1 p-6">
+              <div className="max-w-6xl mx-auto">
+                {tasks.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-6">
+                    <div className="text-center space-y-4">
+                      <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto">
+                        <Calendar className="w-8 h-8 text-primary" />
+                      </div>
+                      <h3 className="text-2xl font-semibold text-foreground">No tasks yet</h3>
+                      <p className="text-muted-foreground max-w-md">
+                        Create your first scheduled AI task to get started with automated workflows.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {tasks.map((task) => (
+                      <Card key={task.id} className="bg-card border-border hover:border-primary/50 transition-colors">
+                        <CardHeader className="pb-3">
+                          <div className="flex items-center justify-between">
+                            <Badge variant={task.status === "completed" ? "default" : "secondary"}>{task.status}</Badge>
+                            <div className="flex gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0 cursor-pointer text-primary hover:text-primary"
+                                onClick={() => runTask(task.id)}
+                                disabled={task.status === "running"}
+                              >
+                                <Play className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0 cursor-pointer"
+                                onClick={() => editTask(task)}
+                              >
+                                <Edit className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0 cursor-pointer text-destructive hover:text-destructive"
+                                onClick={() => deleteTask(task.id)}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          <div>
+                            <h4 className="text-sm font-medium text-card-foreground mb-2">Task Prompt</h4>
+                            <p className="text-sm text-muted-foreground leading-relaxed line-clamp-3">{task.prompt}</p>
+                          </div>
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <Clock className="w-4 h-4" />
+                              <span>{task.schedule}</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <Mail className="w-4 h-4" />
+                              <span>{task.emails.length} recipient(s)</span>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+<end ai-chatbot\app\page.tsx>
+
+
+
+<start backend\app.py>
+from fastapi import FastAPI, Body
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+import os, uvicorn, json
+from datetime import datetime
+from typing import Optional, Dict, Any, Generator
+
+# --- Env & Gemini -------------------------------------------------------------
+from dotenv import load_dotenv
+load_dotenv()
+
+from google import genai
+from google.genai import types
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+model_name = "gemini-2.5-pro"
+thinking_budget = 5000  # Repurposed as max_output_tokens
+
+if GEMINI_API_KEY:
+    try:
+        genai_client = genai.Client(api_key=GEMINI_API_KEY)
+        GEMINI_AVAILABLE = True
+        print("✅ Gemini API initialized")
+    except Exception as e:
+        print(f"❌ Gemini init failed: {e}")
+        genai_client = None
+        GEMINI_AVAILABLE = False
+else:
+    print("⚠️ GEMINI_API_KEY not set")
+    genai_client = None
+    GEMINI_AVAILABLE = False
+
+def strip_fences(text: str) -> str:
+    if not text:
+        return text
+    t = text.strip()
+    if t.startswith("```markdown"):
+        t = t[len("```markdown"):].strip()
+    if t.startswith("```"):
+        t = t[3:].lstrip()
+    if t.endswith("```"):
+        t = t[:-3].rstrip()
+    return t
+
+# === UPDATED PROMPT: answer only the user's question, in valid Markdown ===
+INSTRUCTIONS = """You are a senior CRM analyst.
+
+You will receive:
+- USER_QUESTION: a question from the user.
+- RAW_JSON: one JSON object with raw interactions (emails and/or meetings).
+
+Your task:
+- Answer USER_QUESTION using only the information in RAW_JSON.
+- Return valid Markdown only (no code fences, no HTML). Use headers and bullets for clarity.
+- The user is likely an executive, so provide the answer but also possible insights. 
+- If something is not present in RAW_JSON, say “not available in the data” instead of guessing.
+- Prefer concrete dates, names, and subjects from the data.
+- Use bullets or tables where it helps clarity.
+
+
+Examples:
+
+User: Show me the last 10 interactions with Blackstone
+Assistant:
+
+Here are the last 10 interactions with Blackstone, sorted by the most recent date:
+
+### May 25, 2024 – FROM: Sarah Chen (Blackstone) TO: Jane Doe (LionTree)
+Sarah replied regarding **MedDevice Innovations**, noting that while it’s earlier than their
+typical targets, they may consider it from a growth equity perspective and requested the full book.
+
+### May 25, 2024 – FROM: Jane Doe (LionTree) TO: Sarah Chen (Blackstone)
+Jane introduced **MedDevice Innovations**, a minimally invasive surgical tools company with
+$145M trailing revenue and FDA approvals, exploring strategic alternatives.
+
+### April 15, 2024 – FROM: Dr. Amanda Foster (HealthTech Solutions) TO: Sarah Chen (Blackstone)
+Amanda followed up on *Series C fundraising*, highlighting a $4.2M enterprise deal, FDA clearance
+for a remote monitoring device, and the hire of a new Head of Product.
+
+</end example>
+ - If the user asks for a comprehensive health report, include the following:
+
+ 1. Relationship Strength Assessment
+2. Communication Patterns
+3. Key Stakeholder Analysis
+4. Business Context & Insights
+5. Sentiment & Tone Analysis
+6. Client Health & Satisfaction Indicators
+7. Content Themes
+8. Coordination & Visibility Issues
+9. Knowledge Management Gaps
+10. Action Items & Next Steps
+11. Risk Factors
+12. Opportunities
+
+Make sure you use H2 headers for each section and cleanly structure points and bullets under those. Use H1 header for
+the "Client Health Report - <Client>" header.
+
+"""
+
+def get_context_json(payload: Optional[Dict[str, Any]]) -> str:
+    """Extract or fallback to sample JSON, return minified string."""
+    provided = payload.get("data")
+    if provided is None:
+        # Fallback to local file
+        sample_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "sample_data", "soligence_bankco_sample.json")
+        )
+        if not os.path.exists(sample_path):
+            raise ValueError(
+                f"Sample file not found: {sample_path}. Either POST JSON as `data`, or create the file."
+            )
+        try:
+            with open(sample_path, "r", encoding="utf-8") as f:
+                provided = json.load(f)
+        except Exception as e:
+            raise ValueError(f"Couldn't read sample JSON: {e}")
+    try:
+        return json.dumps(provided, ensure_ascii=False, separators=(",", ":"))
+    except Exception as e:
+        raise ValueError(f"Invalid JSON in `data`: {e}")
+
+def build_prompt(user_question: str, raw_json: str) -> str:
+    """Build the full prompt."""
+    return (
+        INSTRUCTIONS
+        + "\n\nUSER_QUESTION:\n"
+        + user_question
+        + "\n\nRAW_JSON:\n"
+        + raw_json
+    )
+
+# --- FastAPI ------------------------------------------------------------------
+app = FastAPI(title="Argus360 API", description="Client Intelligence API", version="1.3.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
+)
+
+@app.post("/chat")
+async def chat(payload: Optional[Dict[str, Any]] = Body(default=None)):
+    """
+    Pass-through: USER QUESTION + RAW JSON -> Gemini -> Markdown.
+    Request body can include:
+      { "message": "<user question>", "data": <optional raw json> }
+    If 'data' is omitted, we fall back to ../sample_data/liontree_blackstone_sample.json
+    """
+    # 1) Pull user question from frontend
+    user_question = ((payload or {}).get("message") or "").strip()
+    if not user_question:
+        return {"response": "Please provide a question in the request body as `message`."}
+
+    if not GEMINI_AVAILABLE:
+        return {
+            "response": "## LLM Error\nGemini is not configured. Set `GEMINI_API_KEY` and restart the server."
+        }
+
+    # 2) Get JSON context
+    try:
+        minified_json = get_context_json(payload or {})
+    except ValueError as e:
+        return {"response": f"## Error\n{e}"}
+
+    # 3) Build prompt
+    prompt = build_prompt(user_question, minified_json)
+
+    # 4) Call Gemini (same API style + Config)
+    try:
+        resp = genai_client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=thinking_budget,
+                temperature=0.7,
+                candidate_count=1,
+            ),
+        )
+        markdown = strip_fences(getattr(resp, "text", "") or "").strip()
+        if not markdown:
+            markdown = "# No analysis produced."
+        return {"response": markdown}
+    except Exception as e:
+        return {
+            "response": (
+                "## LLM Error\nI couldn't generate insights with Gemini.\n\n"
+                "Make sure `google-genai` is installed and your key is valid.\n\n"
+                f"```\n{e}\n```"
+            )
+        }
+
+@app.post("/chat/stream")
+async def chat_stream(payload: Optional[Dict[str, Any]] = Body(default=None)):
+    """
+    Streaming version: Yields SSE chunks for USER QUESTION + RAW JSON -> Gemini stream -> Markdown deltas.
+    Prints the final streaming response to the console at the end of the stream.
+    """
+    user_question = ((payload or {}).get("message") or "").strip()
+    if not user_question:
+        def error_gen():
+            yield f"data: {json.dumps({'error': 'Please provide a question as `message`.'})}\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
+        return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+    if not GEMINI_AVAILABLE:
+        def error_gen():
+            yield f"data: {json.dumps({'error': 'Gemini is not configured. Set `GEMINI_API_KEY` and restart.'})}\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
+        return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+    try:
+        minified_json = get_context_json(payload or {})
+    except ValueError as e:
+        def error_gen():
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
+        return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+    prompt = build_prompt(user_question, minified_json)
+
+    def stream_generator() -> Generator[str, None, None]:
+        final_response = []  # Collect chunks for final console output
+        try:
+            stream = genai_client.models.generate_content_stream(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=thinking_budget,
+                    temperature=0.7,
+                    candidate_count=1,
+                ),
+            )
+            for chunk in stream:
+                if hasattr(chunk, 'text') and chunk.text:
+                    # Strip any partial fences if needed, but let frontend handle markdown
+                    clean_chunk = strip_fences(chunk.text).strip()
+                    if clean_chunk:
+                        final_response.append(clean_chunk)
+                        yield f"data: {json.dumps({'content': clean_chunk})}\n\n"
+            # Print the complete response to console
+            print("\nFinal Streaming Response:\n" + "".join(final_response))
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
+        except Exception as e:
+            error_message = f"Error during streaming: {str(e)}"
+            print(error_message)
+            yield f"data: {json.dumps({'error': error_message})}\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
+
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "time": datetime.utcnow().isoformat() + "Z"}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+<end backend\app.py>
+
+<start backend\client_report.py>
+#!/usr/bin/env python3
+"""
+Client CRM Intelligence Report Generator
+Gathers all emails TO/FROM a specific client across all employees + relevant calendar meetings
+
+USAGE:
+  # Live (Graph) mode: pass a client domain
+  python client_report.py <client_domain> [--days=30] [--output=filename.json] [--skip-email]
+
+  # Sample-data mode: pass a path to a sample data JSON (raw interactions, not a saved report)
+  python client_report.py <path/to/sample_data.json> [--days=30] [--output=filename.json] [--skip-email]
+
+Requirements:
+- pip install msal python-dotenv tiktoken google-genai azure-communication-email requests
+
+Environment Variables Required (Live/Graph mode):
+- CLIENT_ID, CLIENT_SECRET, TENANT_ID (Microsoft Graph)
+- EMAILS (comma-separated employee emails)
+- INTERNAL_DOMAINS (comma-separated company domains)
+- GEMINI_API_KEY (for AI-powered insights)
+
+Environment Variables Required (Sample-data mode):
+- GEMINI_API_KEY (for AI-powered insights)
+
+Environment Variables Optional:
+- EMAIL_CONNECTION_STRING (Azure Communication Services for email reports)
+- REPORT_RECIPIENTS (comma-separated email addresses for reports)
+- MAX_CONTENT_SIZE (default: 50000)
+"""
+
+import os
+import json
+import requests
+import re
+import sys
+import argparse
+from msal import ConfidentialClientApplication
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
+import tiktoken
+from google import genai
+from google.genai import types
+from prompts import CRM_ANALYST_PROMPT_TEMPLATE
+
+# Import our email module
+from email_utils import send_email_report, initialize_email_client
+
+# Load environment variables
+load_dotenv()
+
+# Configuration - Microsoft Graph
+CLIENT_ID = os.getenv('CLIENT_ID')
+CLIENT_SECRET = os.getenv('CLIENT_SECRET')
+TENANT_ID = os.getenv('TENANT_ID')
+EMPLOYEES_STR = os.getenv('EMAILS')  # All employees to query (using EMAILS env var)
+INTERNAL_DOMAINS_STR = os.getenv('INTERNAL_DOMAINS')
+MAX_CONTENT_SIZE = os.getenv('MAX_CONTENT_SIZE', '50000')
+
+# Configuration - Gemini API
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+
+# Initialize email client
+EMAIL_CLIENT, EMAIL_AVAILABLE, REPORT_RECIPIENTS = initialize_email_client()
+
+# Gemini defaults
+model_name = "gemini-2.5-pro"
+thinking_budget = 20000
+
+# Initialize Gemini client
+if GEMINI_API_KEY:
+    try:
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        GEMINI_AVAILABLE = True
+        print("✅ Gemini API initialized successfully")
+    except Exception as e:
+        print(f"❌ Failed to initialize Gemini API: {e}")
+        gemini_client = None
+        GEMINI_AVAILABLE = False
+else:
+    print("⚠️  GEMINI_API_KEY not found - AI analysis will not be available")
+    gemini_client = None
+    GEMINI_AVAILABLE = False
+
+# Initialize tiktoken for token counting
+try:
+    TOKENIZER = tiktoken.get_encoding("cl100k_base")
+    TOKENIZER_AVAILABLE = True
+    print("✅ tiktoken initialized successfully - token counting enabled")
+except Exception as e:
+    print(f"⚠️  Warning: tiktoken not available - {e}")
+    TOKENIZER = None
+    TOKENIZER_AVAILABLE = False
+
+# Parse configuration
+if EMPLOYEES_STR:
+    EMAILS = [email.strip() for email in EMPLOYEES_STR.split(',') if email.strip()]
+else:
+    EMAILS = []
+
+if INTERNAL_DOMAINS_STR:
+    INTERNAL_DOMAINS = [domain.strip().lower() for domain in INTERNAL_DOMAINS_STR.split(',') if domain.strip()]
+else:
+    INTERNAL_DOMAINS = []
+
+try:
+    MAX_CONTENT_SIZE = int(MAX_CONTENT_SIZE)
+except ValueError:
+    MAX_CONTENT_SIZE = 50000
+
+
+def parse_arguments():
+    """Parse command line arguments. Single positional 'target' that is either a domain or a sample JSON file."""
+    parser = argparse.ArgumentParser(
+        description='Generate CRM intelligence report from a client domain (live Graph) or a sample data JSON file.'
+    )
+    parser.add_argument(
+        'target',
+        help='Client domain (e.g., acme.com) OR path to a sample data JSON file (e.g., ./sample_data/client.json)'
+    )
+    parser.add_argument('--days', type=int, default=30, help='Number of days to look back (default: 30)')
+    parser.add_argument('--output', type=str, help='Output filename (default: client_report_<domain>_<date>.json)')
+    parser.add_argument('--skip-email', action='store_true', help='Skip sending email (useful for testing)')
+    return parser.parse_args()
+
+
+def validate_environment(skip_ai=False, sample_mode=False):
+    """Validate required environment variables."""
+    if sample_mode:
+        # For sample mode, we only need Gemini unless skip_ai is True
+        missing = []
+        if not skip_ai and not GEMINI_API_KEY:
+            missing.append('GEMINI_API_KEY')
+        if missing:
+            print("ERROR: Missing required environment variables for sample-data mode")
+            if not skip_ai:
+                print("  GEMINI_API_KEY - for AI-powered insights (REQUIRED)")
+            return False
+        return True
+
+    # Live/Graph mode
+    missing_vars = []
+    if not CLIENT_ID: missing_vars.append('CLIENT_ID')
+    if not CLIENT_SECRET: missing_vars.append('CLIENT_SECRET')
+    if not TENANT_ID: missing_vars.append('TENANT_ID')
+    if not EMPLOYEES_STR: missing_vars.append('EMAILS')
+    if not INTERNAL_DOMAINS_STR: missing_vars.append('INTERNAL_DOMAINS')
+    if not skip_ai and not GEMINI_API_KEY:
+        missing_vars.append('GEMINI_API_KEY')
+
+    if missing_vars or not EMAILS or not INTERNAL_DOMAINS:
+        print("ERROR: Missing required environment variables in .env file")
+        print("Required (Live/Graph): CLIENT_ID, CLIENT_SECRET, TENANT_ID, EMAILS, INTERNAL_DOMAINS")
+        if not skip_ai:
+            print("Required: GEMINI_API_KEY (for AI-powered insights)")
+        print("Optional: MAX_CONTENT_SIZE")
+        print(f"Missing: {', '.join(missing_vars) if missing_vars else '(see above)'}")
+        return False
+
+    return True
+
+
+def load_sample_data(sample_data_file):
+    """Load sample data for testing. Returns (client_domain, employees_dict)."""
+    if not os.path.exists(sample_data_file):
+        print(f"❌ Sample data file not found: {sample_data_file}")
+        print(f"💡 Create the sample data file or check the path")
+        return None
+
+    try:
+        print(f"📄 Loading sample data from: {sample_data_file}")
+        with open(sample_data_file, 'r', encoding='utf-8') as f:
+            sample_data = json.load(f)
+
+        client_domain = sample_data.get('client_domain', '').lower()
+        employees_data = sample_data.get('employees', {})
+
+        if not client_domain:
+            print("⚠️  Sample file missing 'client_domain' field")
+        print("✅ Sample data loaded successfully")
+        print(f"   - Client domain: {client_domain or '(unknown)'}")
+        print(f"   - Employees: {len(employees_data)}")
+        total_items = sum(len(items) for items in employees_data.values())
+        print(f"   - Total sample items (emails+meetings): {total_items}")
+        return client_domain, employees_data
+
+    except Exception as e:
+        print(f"❌ Error loading sample data: {e}")
+        return None
+
+
+def count_tokens(text):
+    """Count tokens in text using tiktoken."""
+    if not TOKENIZER_AVAILABLE or not text:
+        return 0
+    try:
+        clean_text = str(text).strip()
+        if not clean_text:
+            return 0
+        tokens = TOKENIZER.encode(clean_text)
+        return len(tokens)
+    except Exception as e:
+        print(f"⚠️  Warning: Error counting tokens - {e}")
+        return 0
+
+
+def extract_domain_from_email(email_address):
+    """Extract domain from email address."""
+    if not email_address:
+        return None
+    try:
+        return email_address.split('@')[1].lower()
+    except IndexError:
+        return None
+
+
+def is_client_interaction(client_domain, from_email, recipients_lists):
+    """Check if interaction involves the target client domain (emails)."""
+    client_domain = (client_domain or '').lower()
+    if not client_domain:
+        return False
+
+    # Check sender
+    if from_email:
+        sender_domain = extract_domain_from_email(from_email)
+        if sender_domain == client_domain:
+            return True
+
+    # Check all recipients
+    for recipients in recipients_lists:
+        if recipients:
+            for recipient in recipients:
+                if isinstance(recipient, dict):
+                    email_addr = recipient.get('emailAddress', {}).get('address') or recipient.get('address')
+                elif isinstance(recipient, str):
+                    email_addr = recipient
+                else:
+                    continue
+                if email_addr:
+                    recipient_domain = extract_domain_from_email(email_addr)
+                    if recipient_domain == client_domain:
+                        return True
+    return False
+
+
+def clean_html_content(html_content):
+    """Clean HTML content for better readability."""
+    if not html_content:
+        return ""
+    clean_text = re.sub(r'<[^>]+>', '', html_content)
+    clean_text = (clean_text
+                  .replace('&nbsp;', ' ')
+                  .replace('&amp;', '&')
+                  .replace('&lt;', '<')
+                  .replace('&gt;', '>')
+                  .replace('&quot;', '"'))
+    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+    return clean_text
+
+
+def get_access_token():
+    """Get access token using client credentials flow."""
+    print("🔐 Authenticating with Microsoft Graph...")
+    authority = f"https://login.microsoftonline.com/{TENANT_ID}"
+    scope = ["https://graph.microsoft.com/.default"]
+    app = ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=authority,
+        client_credential=CLIENT_SECRET
+    )
+    result = app.acquire_token_for_client(scopes=scope)
+    if "access_token" in result:
+        print("✅ Authentication successful!")
+        return result['access_token']
+    else:
+        print("❌ Authentication failed!")
+        print(f"Error: {result.get('error_description', 'Unknown error')}")
+        return None
+
+
+def gather_client_emails(access_token, employee_email, client_domain, days_back):
+    """Gather emails involving the client domain for a specific employee."""
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+        'Prefer': 'outlook.body-content-type="text"'
+    }
+
+    end_date = datetime.utcnow()
+    start_date = end_date - timedelta(days=days_back)
+    start_str = start_date.strftime('%Y-%m-%dT00:00:00Z')
+    end_str = end_date.strftime('%Y-%m-%dT23:59:59Z')
+
+    url = f"https://graph.microsoft.com/v1.0/users/{employee_email}/messages"
+    params = {
+        '$filter': f"receivedDateTime ge {start_str} and receivedDateTime le {end_str}",
+        '$select': 'id,subject,body,bodyPreview,from,toRecipients,ccRecipients,bccRecipients,sentDateTime,receivedDateTime,hasAttachments,importance,conversationId',
+        '$orderby': 'receivedDateTime desc',
+        '$top': 999
+    }
+
+    try:
+        print(f"📧 Gathering emails for {employee_email} involving {client_domain}...")
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        result = response.json()
+
+        client_emails = []
+        if 'value' in result:
+            for email in result['value']:
+                from_email = None
+                from_field = email.get('from', {})
+                if from_field and 'emailAddress' in from_field:
+                    from_email = from_field['emailAddress'].get('address')
+
+                to_recipients = email.get('toRecipients', [])
+                cc_recipients = email.get('ccRecipients', [])
+                bcc_recipients = email.get('bccRecipients', [])
+
+                if is_client_interaction(client_domain, from_email, [to_recipients, cc_recipients, bcc_recipients]):
+                    processed_email = process_email(email, employee_email, client_domain)
+                    if processed_email:
+                        client_emails.append(processed_email)
+
+        print(f"   Found {len(client_emails)} emails involving {client_domain}")
+        return client_emails
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error gathering emails for {employee_email}: {e}")
+        return []
+
+
+def process_email(email, employee_email, client_domain):
+    """Process a single email and extract relevant information."""
+    try:
+        email_info = {
+            'type': 'email',
+            'id': email.get('id'),
+            'subject': email.get('subject', 'No Subject'),
+            'employee_email': employee_email,
+            'client_domain': client_domain,
+            'conversation_id': email.get('conversationId'),
+            'importance': email.get('importance', 'normal'),
+            'has_attachments': email.get('hasAttachments', False)
+        }
+
+        # participants
+        from_field = email.get('from', {})
+        from_email = None
+        if from_field and 'emailAddress' in from_field:
+            from_email = from_field['emailAddress'].get('address')
+            email_info['from'] = {
+                'name': from_field['emailAddress'].get('name'),
+                'address': from_email
+            }
+
+        def extract_recipients(recipients_list):
+            if not recipients_list:
+                return []
+            return [
+                {
+                    'name': recipient.get('emailAddress', {}).get('name'),
+                    'address': recipient.get('emailAddress', {}).get('address')
+                }
+                for recipient in recipients_list
+                if 'emailAddress' in recipient
+            ]
+
+        email_info['to_recipients'] = extract_recipients(email.get('toRecipients', []))
+        email_info['cc_recipients'] = extract_recipients(email.get('ccRecipients', []))
+        email_info['bcc_recipients'] = extract_recipients(email.get('bccRecipients', []))
+
+        # dates
+        email_info['sent_datetime'] = email.get('sentDateTime')
+        email_info['received_datetime'] = email.get('receivedDateTime')
+
+        # content
+        body_content = email.get('body', {})
+        if body_content:
+            content_type = body_content.get('contentType', 'HTML')
+            raw_content = body_content.get('content', '')
+            if isinstance(raw_content, dict) and 'content' in raw_content:
+                # tolerate sample shapes
+                raw_content = raw_content.get('content', '')
+
+            if len(raw_content) > MAX_CONTENT_SIZE:
+                raw_content = raw_content[:MAX_CONTENT_SIZE] + "... [TRUNCATED]"
+
+            email_info['body'] = {
+                'content_type': content_type,
+                'cleaned_content': clean_html_content(raw_content) if str(content_type).lower() == 'html' else raw_content
+            }
+
+        email_info['body_preview'] = email.get('bodyPreview', '')
+
+        # token counts
+        if TOKENIZER_AVAILABLE:
+            subject_tokens = count_tokens(email_info['subject'])
+            body_tokens = count_tokens(email_info.get('body', {}).get('cleaned_content', ''))
+            preview_tokens = count_tokens(email_info['body_preview'])
+            email_info['token_analysis'] = {
+                'subject_tokens': subject_tokens,
+                'body_tokens': body_tokens,
+                'preview_tokens': preview_tokens,
+                'total_tokens': subject_tokens + body_tokens + preview_tokens
+            }
+
+        return email_info
+
+    except Exception as e:
+        print(f"   ⚠️  Error processing email: {e}")
+        return None
+
+
+# =========================
+# Meetings (Calendar) utils
+# =========================
+
+def is_client_meeting(client_domain, organizer_email, attendees_list):
+    """Return True if the meeting involves the target client domain (organizer or any attendee)."""
+    client_domain = (client_domain or "").lower()
+    if not client_domain:
+        return False
+
+    def domain_of(addr):
+        try:
+            return addr.split("@")[1].lower()
+        except Exception:
+            return None
+
+    if organizer_email and domain_of(organizer_email) == client_domain:
+        return True
+
+    for att in attendees_list or []:
+        email_addr = None
+        if isinstance(att, dict):
+            # event.attendees[].emailAddress.address
+            email_addr = (att.get("emailAddress", {}) or {}).get("address")
+        elif isinstance(att, str):
+            email_addr = att
+        if email_addr and domain_of(email_addr) == client_domain:
+            return True
+    return False
+
+
+def process_meeting(event, employee_email, client_domain):
+    """Normalize a Graph event -> internal 'meeting' shape."""
+    try:
+        start = (event.get("start") or {})
+        end = (event.get("end") or {})
+        body_obj = event.get("body") or {}
+
+        # organizer
+        organizer = (event.get("organizer") or {}).get("emailAddress", {})
+        organizer_email = organizer.get("address")
+
+        # attendees
+        attendees = []
+        for a in event.get("attendees") or []:
+            ea = a.get("emailAddress") or {}
+            attendees.append({
+                "name": ea.get("name"),
+                "address": ea.get("address")
+            })
+
+        # body (clean to text similar to emails)
+        raw_body = body_obj.get("content", "") or ""
+        if len(raw_body) > MAX_CONTENT_SIZE:
+            raw_body = raw_body[:MAX_CONTENT_SIZE] + "... [TRUNCATED]"
+
+        # Note: Events often return HTML bodies; we normalize to text either way
+        cleaned_body = clean_html_content(raw_body) if (body_obj.get("contentType", "html").lower() == "html") else raw_body
+
+        meeting = {
+            "type": "meeting",
+            "id": event.get("id"),
+            "subject": event.get("subject") or "No Subject",
+            "employee_email": employee_email,
+            "client_domain": client_domain,
+            "organizer": {
+                "name": organizer.get("name"),
+                "address": organizer_email
+            },
+            "attendees": attendees,
+            "location": (event.get("location") or {}).get("displayName"),
+            "is_online_meeting": event.get("isOnlineMeeting", False),
+            "online_meeting": event.get("onlineMeeting"),
+            "show_as": event.get("showAs"),
+            "sensitivity": event.get("sensitivity"),
+            "start_datetime": start.get("dateTime"),
+            "end_datetime": end.get("dateTime"),
+            "body_preview": event.get("bodyPreview") or "",
+            "body": {
+                "content_type": body_obj.get("contentType") or "text",
+                "cleaned_content": cleaned_body
+            }
+        }
+
+        if TOKENIZER_AVAILABLE:
+            subj_tokens = count_tokens(meeting["subject"])
+            body_tokens = count_tokens(cleaned_body)
+            preview_tokens = count_tokens(meeting["body_preview"])
+            meeting["token_analysis"] = {
+                "subject_tokens": subj_tokens,
+                "body_tokens": body_tokens,
+                "preview_tokens": preview_tokens,
+                "total_tokens": subj_tokens + body_tokens + preview_tokens
+            }
+
+        return meeting
+    except Exception as e:
+        print(f"   ⚠️  Error processing meeting: {e}")
+        return None
+
+
+def gather_client_meetings(access_token, employee_email, client_domain, days_back):
+    """Fetch meetings from the user's calendarView within the date window; keep only those involving the client."""
+    # Request UTC in the response; if you prefer EST, use "Eastern Standard Time"
+    prefer_header = 'outlook.timezone="UTC", outlook.body-content-type="text"'
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Prefer": prefer_header
+    }
+
+    end_date = datetime.utcnow()
+    start_date = end_date - timedelta(days=days_back)
+    start_str = start_date.strftime("%Y-%m-%dT00:00:00Z")
+    end_str = end_date.strftime("%Y-%m-%dT23:59:59Z")
+
+    url = f"https://graph.microsoft.com/v1.0/users/{employee_email}/calendarView"
+    params = {
+        "startDateTime": start_str,
+        "endDateTime": end_str,
+        "$select": "id,subject,body,bodyPreview,organizer,attendees,start,end,location,isOnlineMeeting,onlineMeeting,showAs,sensitivity",
+        "$orderby": "start/dateTime desc",
+        "$top": 100
+    }
+
+    meetings = []
+    try:
+        print(f"📅 Gathering meetings for {employee_email} involving {client_domain}...")
+        while True:
+            resp = requests.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+
+            for ev in data.get("value", []):
+                organizer = (ev.get("organizer") or {}).get("emailAddress", {})
+                organizer_email = organizer.get("address")
+                attendees = ev.get("attendees") or []
+
+                if is_client_meeting(client_domain, organizer_email, attendees):
+                    m = process_meeting(ev, employee_email, client_domain)
+                    if m:
+                        meetings.append(m)
+
+            next_link = data.get("@odata.nextLink")
+            if not next_link:
+                break
+            # Follow nextLink as-is; subsequent request should not pass params again
+            url, params = next_link, None
+
+        print(f"   Found {len(meetings)} meetings involving {client_domain}")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error gathering meetings for {employee_email}: {e}")
+    return meetings
+
+
+# =========================
+# Sample data processor
+# =========================
+
+def process_sample_emails_for_employee(employee_email, sample_emails, client_domain):
+    """(Kept for backward compatibility) Process sample emails for a single employee."""
+    processed = []
+    print(f"📧 Processing {len(sample_emails)} sample emails for {employee_email}...")
+    for email_data in sample_emails:
+        processed_email = process_email(email_data, employee_email, client_domain)
+        if processed_email:
+            processed.append(processed_email)
+    print(f"   ✅ Processed {len(processed)} emails for {employee_email}")
+    return processed
+
+
+def process_sample_interactions_for_employee(employee_email, items, client_domain):
+    """Accepts a list of email-like dicts and/or meeting-like dicts."""
+    processed_emails, processed_meetings = [], []
+    for item in items:
+        if isinstance(item, dict) and (item.get("type") == "meeting" or "start" in item):
+            m = process_meeting(item, employee_email, client_domain)
+            if m:
+                processed_meetings.append(m)
+        else:
+            e = process_email(item, employee_email, client_domain)
+            if e:
+                processed_emails.append(e)
+    print(f"📧 Sample emails: {len(processed_emails)} | 📅 Sample meetings: {len(processed_meetings)} for {employee_email}")
+    return processed_emails, processed_meetings
+
+
+# =========================
+# Aggregation & Analysis
+# =========================
+
+def aggregate_employee_data(employee_email, emails, meetings, transcripts):
+    """Aggregate all interaction data for a single employee."""
+    all_interactions = emails + meetings + transcripts
+    total_tokens = 0
+    if TOKENIZER_AVAILABLE:
+        total_tokens = sum(
+            interaction.get('token_analysis', {}).get('total_tokens', 0)
+            for interaction in all_interactions
+        )
+    return {
+        'employee_email': employee_email,
+        'interaction_counts': {
+            'emails': len(emails),
+            'meetings': len(meetings),
+            'transcripts': len(transcripts),
+            'total': len(all_interactions)
+        },
+        'total_tokens': total_tokens if TOKENIZER_AVAILABLE else None,
+        'interactions': all_interactions
+    }
+
+
+def compile_all_employee_data(all_employee_data, client_domain, days_back):
+    """Compile data from all employees into structured dataset (emails + meetings)."""
+    total_interactions = sum(d["interaction_counts"]["total"] for d in all_employee_data.values())
+    total_emails = sum(d["interaction_counts"]["emails"] for d in all_employee_data.values())
+    total_meetings = sum(d["interaction_counts"]["meetings"] for d in all_employee_data.values())
+
+    total_tokens = 0
+    if TOKENIZER_AVAILABLE:
+        total_tokens = sum((d["total_tokens"] or 0) for d in all_employee_data.values())
+
+    timeline_data = []
+    stakeholder_mapping = {}
+
+    for employee_email, employee_data in all_employee_data.items():
+        for interaction in employee_data["interactions"]:
+            entry = {
+                "employee": employee_email,
+                "type": interaction["type"],
+                "subject": interaction.get("subject"),
+                "datetime": None,
+                "participants": []
+            }
+
+            if interaction["type"] == "email":
+                entry["datetime"] = interaction.get("received_datetime")
+                if interaction.get("from", {}).get("address"):
+                    p = interaction["from"]["address"]
+                    entry["participants"].append(p)
+                    stakeholder_mapping[p] = stakeholder_mapping.get(p, 0) + 1
+                for rt in ["to_recipients", "cc_recipients", "bcc_recipients"]:
+                    for r in interaction.get(rt, []) or []:
+                        if r.get("address"):
+                            p = r["address"]
+                            entry["participants"].append(p)
+                            stakeholder_mapping[p] = stakeholder_mapping.get(p, 0) + 1
+
+            elif interaction["type"] == "meeting":
+                entry["datetime"] = interaction.get("start_datetime")
+                org = interaction.get("organizer", {}) or {}
+                if org.get("address"):
+                    p = org["address"]
+                    entry["participants"].append(p)
+                    stakeholder_mapping[p] = stakeholder_mapping.get(p, 0) + 1
+                for a in interaction.get("attendees") or []:
+                    if a.get("address"):
+                        p = a["address"]
+                        entry["participants"].append(p)
+                        stakeholder_mapping[p] = stakeholder_mapping.get(p, 0) + 1
+
+            timeline_data.append(entry)
+
+    timeline_data.sort(key=lambda x: x["datetime"] or "", reverse=True)
+
+    return {
+        "client_domain": client_domain,
+        "analysis_period_days": days_back,
+        "total_employees_queried": len(all_employee_data),
+        "statistics": {
+            "total_interactions": total_interactions,
+            "total_emails": total_emails,
+            "total_meetings": total_meetings,
+            "total_transcripts": 0,
+            "total_tokens": total_tokens if TOKENIZER_AVAILABLE else None
+        },
+        "timeline_data": timeline_data,
+        "stakeholder_mapping": stakeholder_mapping,
+        "employee_interactions": all_employee_data
+    }
+
+
+def generate_crm_insights(structured_dataset):
+    """Generate CRM insights using Gemini AI with Markdown output ONLY (emails + meetings)."""
+    if not GEMINI_AVAILABLE or not gemini_client:
+        raise Exception("Gemini API is required but not available. Please set GEMINI_API_KEY.")
+
+    client_domain = structured_dataset['client_domain']
+    stats = structured_dataset['statistics']
+    stakeholders = structured_dataset['stakeholder_mapping']
+    employee_data = structured_dataset['employee_interactions']
+
+    stakeholder_list = list(stakeholders.items())
+    top_stakeholders = stakeholder_list[:10] if stakeholder_list else []
+
+    # Split interactions
+    all_emails, all_meetings = [], []
+    for _, emp_data in employee_data.items():
+        for it in emp_data['interactions']:
+            if it['type'] == 'email':
+                all_emails.append(it)
+            elif it['type'] == 'meeting':
+                all_meetings.append(it)
+
+    all_emails.sort(key=lambda x: x.get('received_datetime', ''), reverse=True)
+    all_meetings.sort(key=lambda x: x.get('start_datetime', ''), reverse=True)
+
+    # Emails summary (as before)
+    email_lines = []
+    for i, email in enumerate(all_emails, 1):
+        sender = email.get('from', {}).get('address', 'Unknown')
+        recipients = ', '.join([r.get('address', '') for r in email.get('to_recipients', [])])
+        subject = email.get('subject', 'No Subject')
+        body_content = email.get('body', {}).get('cleaned_content', '')
+        email_lines.append(f"""EMAIL #{i}:
+Date: {email.get('received_datetime', 'Unknown')[:10]}
+From: {sender}
+To: {recipients}
+Subject: {subject}
+Body: {body_content}
+---""")
+
+    # Meetings summary (new)
+    meeting_lines = []
+    for j, mtg in enumerate(all_meetings, 1):
+        organizer = (mtg.get('organizer') or {}).get('address', 'Unknown')
+        attendees = ', '.join([a.get('address', '') for a in mtg.get('attendees', [])])
+        subject = mtg.get('subject', 'No Subject')
+        body_content = mtg.get('body', {}).get('cleaned_content', '')
+        meeting_lines.append(f"""MEETING #{j}:
+Start: {mtg.get('start_datetime', 'Unknown')}
+End: {mtg.get('end_datetime', 'Unknown')}
+Organizer: {organizer}
+Attendees: {attendees}
+Subject: {subject}
+Notes: {body_content}
+---""")
+
+    stakeholders_section = "\n".join([f"- {email}: {count} interactions" for email, count in top_stakeholders])
+    employee_breakdown_section = "\n".join([
+        f"- {emp}: {data['interaction_counts']['emails']} emails, {data['interaction_counts']['meetings']} meetings"
+        for emp, data in employee_data.items()
+    ])
+
+    emails_block = "\n".join(email_lines)
+    meetings_block = "\n".join(meeting_lines)
+    all_emails_content_str = emails_block
+    if meetings_block:
+        all_emails_content_str += "\n\n=== MEETINGS (CalendarView) ===\n" + meetings_block
+
+    prompt = CRM_ANALYST_PROMPT_TEMPLATE.format(
+        client_domain=client_domain,
+        analysis_period_days=structured_dataset['analysis_period_days'],
+        total_interactions=stats['total_interactions'],
+        total_employees_queried=structured_dataset['total_employees_queried'],
+        stakeholders_section=stakeholders_section,
+        employee_breakdown_section=employee_breakdown_section,
+        all_emails_content=all_emails_content_str
+    )
+    try:
+        total_prompt_tokens = count_tokens(prompt) if TOKENIZER_AVAILABLE else 0
+
+        response = gemini_client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=thinking_budget
+                )
+            )
+        )
+        markdown_analysis = (response.text or "").strip()
+
+        # strip accidental code fences
+        if markdown_analysis.startswith('```markdown'):
+            markdown_analysis = markdown_analysis[11:]
+        if markdown_analysis.startswith('```'):
+            markdown_analysis = markdown_analysis[3:]
+        if markdown_analysis.endswith('```'):
+            markdown_analysis = markdown_analysis[:-3]
+        markdown_analysis = markdown_analysis.strip()
+
+        response_tokens = count_tokens(markdown_analysis) if TOKENIZER_AVAILABLE else 0
+        input_cost = (total_prompt_tokens / 1_000_000) * 1.25 if TOKENIZER_AVAILABLE else 0
+        output_cost = (response_tokens / 1_000_000) * 10.00 if TOKENIZER_AVAILABLE else 0
+        total_cost = input_cost + output_cost
+
+        insights = {
+            'ai_analysis_markdown': markdown_analysis,
+            'communication_patterns': {
+                'most_active_employee': None,
+                'communication_frequency': f"{stats['total_interactions']} interactions over {structured_dataset['analysis_period_days']} days"
+            },
+            'key_stakeholders': top_stakeholders,
+            'generated_by': 'Gemini AI (Markdown Only)',
+            'emails_analyzed': len(all_emails),
+            'meetings_analyzed': len(all_meetings),
+            'total_interactions_analyzed': stats['total_interactions'],
+            'token_analysis': {
+                'input_prompt_tokens': total_prompt_tokens,
+                'output_response_tokens': response_tokens,
+                'total_tokens': total_prompt_tokens + response_tokens,
+                'input_cost': input_cost,
+                'output_cost': output_cost,
+                'total_cost': total_cost,
+                'tokenizer_available': TOKENIZER_AVAILABLE
+            }
+        }
+
+        if structured_dataset['employee_interactions']:
+            most_active = max(
+                structured_dataset['employee_interactions'].items(),
+                key=lambda x: x[1]['interaction_counts']['total']
+            )
+            insights['communication_patterns']['most_active_employee'] = {
+                'email': most_active[0],
+                'interaction_count': most_active[1]['interaction_counts']['total']
+            }
+
+        print("✅ Generated AI-powered insights using Gemini (Markdown Only)")
+        print(f"📧 Emails analyzed: {len(all_emails)} | 📅 Meetings analyzed: {len(all_meetings)}")
+        if TOKENIZER_AVAILABLE:
+            print(f"💰 Analysis Cost: ${total_cost:.2f} (tokens: {total_prompt_tokens + response_tokens:,})")
+        else:
+            print("⚠️  Cost calculation not available (tiktoken not installed)")
+
+        return insights
+
+    except Exception as e:
+        raise Exception(f"Failed to generate CRM insights with Gemini: {e}")
+
+
+def save_client_report(structured_dataset, insights, filename=None):
+    """Save the client report to JSON file."""
+    if filename is None:
+        client_domain = (structured_dataset['client_domain'] or 'unknown').replace('.', '_')
+        date_str = datetime.now().strftime('%Y%m%d')
+        filename = f"client_report_{client_domain}_{date_str}.json"
+
+    report_data = {
+        'report_info': {
+            'generated_timestamp': datetime.now().isoformat(),
+            'client_domain': structured_dataset['client_domain'],
+            'analysis_period_days': structured_dataset['analysis_period_days'],
+            'generator_version': '1.1.0'  # bumped for meetings integration
+        },
+        'crm_insights': insights,
+        'structured_dataset': structured_dataset
+    }
+
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(report_data, f, indent=2, ensure_ascii=False)
+
+        print(f"✅ Client report saved to: {filename}")
+        print(f"📊 Report summary:")
+        print(f"   - Client: {structured_dataset['client_domain']}")
+        print(f"   - Total interactions: {structured_dataset['statistics']['total_interactions']}")
+        print(f"   - Emails: {structured_dataset['statistics']['total_emails']}")
+        print(f"   - Meetings: {structured_dataset['statistics']['total_meetings']}")
+        print(f"   - Employees involved: {structured_dataset['total_employees_queried']}")
+        if TOKENIZER_AVAILABLE and structured_dataset['statistics']['total_tokens'] is not None:
+            print(f"   - Total tokens: {structured_dataset['statistics']['total_tokens']:,}")
+        return filename
+
+    except Exception as e:
+        print(f"❌ Error saving report: {e}")
+        return None
+
+
+def main():
+    """Main execution function."""
+    args = parse_arguments()
+
+    # Decide mode based on the single positional argument
+    target = args.target
+    sample_mode = False
+    sample_file = None
+    client_domain = None
+
+    # If it's an existing file path or endswith .json, treat as sample-data mode
+    if os.path.isfile(target) or target.lower().endswith('.json'):
+        sample_mode = True
+        sample_file = target
+    else:
+        client_domain = target.lower()
+
+    # Validate environment
+    if not validate_environment(sample_mode=sample_mode):
+        return
+
+    days_back = args.days
+    output_filename = args.output
+
+    if sample_mode:
+        print("🧪 Running in SAMPLE DATA mode - using test data instead of API calls")
+        sample_result = load_sample_data(sample_file)
+        if not sample_result:
+            return
+        client_domain_from_sample, sample_employees_data = sample_result
+        # Prefer domain from sample; fall back to inferred
+        client_domain = client_domain_from_sample or "(unknown)"
+
+        all_employee_data = {}
+        for employee_email, sample_items in sample_employees_data.items():
+            print(f"\n{'='*20} Processing {employee_email} (SAMPLE DATA) {'='*20}")
+            emails, meetings = process_sample_interactions_for_employee(employee_email, sample_items, client_domain)
+            transcripts = []
+            employee_data = aggregate_employee_data(employee_email, emails, meetings, transcripts)
+            all_employee_data[employee_email] = employee_data
+            print(f"✅ {employee_email}: {employee_data['interaction_counts']['emails']} emails, {employee_data['interaction_counts']['meetings']} meetings processed")
+
+    else:
+        # Live Graph mode
+        print("🚀 Starting Client CRM Intelligence Report Generation (LIVE)")
+        print(f"🎯 Client domain: {client_domain}")
+        print(f"📅 Analysis period: {days_back} days")
+        print(f"👥 Employees to query: {len(EMAILS)}")
+        print(f"📧 Focus: Email interactions + 📅 Calendar meetings")
+
+        access_token = get_access_token()
+        if not access_token:
+            return
+
+        all_employee_data = {}
+        for employee_email in EMAILS:
+            print(f"\n{'='*20} Processing {employee_email} {'='*20}")
+            emails = gather_client_emails(access_token, employee_email, client_domain, days_back)
+            meetings = gather_client_meetings(access_token, employee_email, client_domain, days_back)
+            transcripts = []  # reserved for future (e.g., recorded call transcripts)
+            employee_data = aggregate_employee_data(employee_email, emails, meetings, transcripts)
+            all_employee_data[employee_email] = employee_data
+            print(f"✅ {employee_email}: {employee_data['interaction_counts']['emails']} emails, {employee_data['interaction_counts']['meetings']} meetings found")
+
+    # Compile dataset
+    print(f"\n📊 Compiling data from all employees...")
+    structured_dataset = compile_all_employee_data(all_employee_data, client_domain, days_back)
+
+    # Generate AI insights
+    print(f"🤖 Generating CRM insights using Gemini AI...")
+    try:
+        insights = generate_crm_insights(structured_dataset)
+    except Exception as e:
+        print(f"❌ Failed to generate CRM insights: {e}")
+        print("💡 Make sure GEMINI_API_KEY is set and valid")
+        return
+
+    # Save report
+    print(f"\n💾 Saving client report...")
+    report_filename = save_client_report(structured_dataset, insights, output_filename)
+
+    if report_filename:
+        mode_indicator = " (SAMPLE DATA)" if sample_mode else ""
+        print(f"\n✅ Client CRM report generated successfully!{mode_indicator}")
+        print(f"📁 Report saved as: {report_filename}")
+        print(f"\n🎯 Key insights for {client_domain}:")
+        print(f"   - Total email interactions: {structured_dataset['statistics']['total_emails']}")
+        print(f"   - Total meetings: {structured_dataset['statistics']['total_meetings']}")
+        print(f"   - All interactions analyzed: {insights.get('total_interactions_analyzed', 0)}")
+
+        token_info = insights.get('token_analysis', {})
+        if token_info.get('tokenizer_available'):
+            print(f"   - Analysis cost: ${token_info.get('total_cost', 0):.2f} ({token_info.get('total_tokens', 0):,} tokens)")
+
+        if insights.get('key_stakeholders'):
+            top_stakeholder = insights['key_stakeholders'][0]
+            print(f"   - Top stakeholder: {top_stakeholder[0]} ({top_stakeholder[1]} interactions)")
+
+        if insights.get('communication_patterns', {}).get('most_active_employee'):
+            most_active = insights['communication_patterns']['most_active_employee']
+            print(f"   - Most active employee (by total interactions): {most_active['email']} ({most_active['interaction_count']} total)")
+
+        if insights.get('ai_analysis_markdown'):
+            print(f"\n🤖 AI Analysis Preview:")
+            preview = insights['ai_analysis_markdown']
+            preview = (preview[:400] + "...") if len(preview) > 400 else preview
+            print(f"   {preview}")
+            print(f"\n📄 Full detailed analysis is in: {report_filename}")
+
+        # Attempt to email unless skipped
+        if not args.skip_email:
+            print(f"\n📧 Attempting to send email report...")
+            email_sent = send_email_report(
+                insights,
+                structured_dataset,
+                report_filename,
+                email_client=EMAIL_CLIENT,
+                email_available=EMAIL_AVAILABLE,
+                report_recipients=REPORT_RECIPIENTS
+            )
+            if email_sent:
+                print(f"📬 Email report sent to stakeholders")
+            else:
+                print(f"📬 Email report not sent (check email configuration)")
+        else:
+            print(f"\n📧 Email sending skipped (--skip-email flag used)")
+    else:
+        print(f"\n❌ Client CRM report generation failed!")
+
+
+if __name__ == "__main__":
+    main()
+
+<end backend\client_report.py>
+
+<start backend\daily_batch_processing.py>
+"""
+Microsoft Graph Daily Email Query Script
+Queries emails for a specific date, categorizes as internal/external, and saves to JSON
+Usage: python script.py [YYYYMMDD] (defaults to today if no date provided)
+"""
+
+import os
+import json
+import requests
+import re
+import sys
+from msal import ConfidentialClientApplication
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
+import tiktoken  # Add tiktoken import
+
+# Load environment variables
+load_dotenv()
+
+# Configuration - Microsoft Graph
+CLIENT_ID = os.getenv('CLIENT_ID')
+CLIENT_SECRET = os.getenv('CLIENT_SECRET')
+TENANT_ID = os.getenv('TENANT_ID')
+EMAILS_STR = os.getenv('EMAILS')
+INTERNAL_DOMAINS_STR = os.getenv('INTERNAL_DOMAINS')  # Only your company's domains
+EXCLUDE_DOMAINS_STR = os.getenv('EXCLUDE_DOMAINS')  # Domains to exclude (optional)
+MAX_EMAIL_SIZE = os.getenv('MAX_EMAIL_SIZE')  # Max email body size in characters (optional)
+
+# Initialize tiktoken encoder for token counting
+try:
+    TOKENIZER = tiktoken.get_encoding("cl100k_base")  # GPT-3.5/GPT-4 encoding
+    TOKENIZER_AVAILABLE = True
+    print("✅ tiktoken initialized successfully")
+except Exception as e:
+    print(f"⚠️  Warning: tiktoken not available - {e}")
+    TOKENIZER = None
+    TOKENIZER_AVAILABLE = False
+
+# Parse email list
+if EMAILS_STR:
+    EMAILS = [email.strip() for email in EMAILS_STR.split(',') if email.strip()]
+else:
+    EMAILS = []
+
+# Parse internal domains list (only your company's domains)
+if INTERNAL_DOMAINS_STR:
+    INTERNAL_DOMAINS = [domain.strip().lower() for domain in INTERNAL_DOMAINS_STR.split(',') if domain.strip()]
+else:
+    INTERNAL_DOMAINS = []
+
+# Parse exclude domains list (domains to filter out)
+if EXCLUDE_DOMAINS_STR:
+    EXCLUDE_DOMAINS = [domain.strip().lower() for domain in EXCLUDE_DOMAINS_STR.split(',') if domain.strip()]
+else:
+    EXCLUDE_DOMAINS = []
+
+# Parse max email size
+if MAX_EMAIL_SIZE:
+    try:
+        MAX_EMAIL_SIZE = int(MAX_EMAIL_SIZE)
+    except ValueError:
+        print("⚠️  Warning: MAX_EMAIL_SIZE must be a number, ignoring filter")
+        MAX_EMAIL_SIZE = None
+else:
+    MAX_EMAIL_SIZE = None
+
+def count_tokens(text):
+    """Count tokens in text using tiktoken"""
+    if not TOKENIZER_AVAILABLE or not text:
+        return 0
+    
+    try:
+        # Clean the text and count tokens
+        clean_text = str(text).strip()
+        if not clean_text:
+            return 0
+        
+        tokens = TOKENIZER.encode(clean_text)
+        return len(tokens)
+    except Exception as e:
+        print(f"⚠️  Warning: Error counting tokens - {e}")
+        return 0
+
+def calculate_email_tokens(email_info):
+    """Calculate token counts for different parts of an email"""
+    token_counts = {
+        'subject_tokens': 0,
+        'body_tokens': 0,
+        'body_preview_tokens': 0,
+        'total_tokens': 0
+    }
+    
+    if not TOKENIZER_AVAILABLE:
+        return token_counts
+    
+    # Count tokens in subject
+    subject = email_info.get('subject', '')
+    if subject:
+        token_counts['subject_tokens'] = count_tokens(subject)
+    
+    # Count tokens in body content
+    body = email_info.get('body', {})
+    if body and 'cleaned_content' in body:
+        body_content = body.get('cleaned_content', '')
+        if body_content:
+            token_counts['body_tokens'] = count_tokens(body_content)
+    
+    # Count tokens in body preview
+    body_preview = email_info.get('body_preview', '')
+    if body_preview:
+        token_counts['body_preview_tokens'] = count_tokens(body_preview)
+    
+    # Calculate total tokens
+    token_counts['total_tokens'] = (
+        token_counts['subject_tokens'] + 
+        token_counts['body_tokens'] + 
+        token_counts['body_preview_tokens']
+    )
+    
+    return token_counts
+
+# Parse command line argument for date
+def parse_date_argument():
+    """Parse command line date argument or use today's date"""
+    if len(sys.argv) > 1:
+        date_str = sys.argv[1]
+        try:
+            # Validate date format YYYYMMDD
+            if len(date_str) != 8 or not date_str.isdigit():
+                raise ValueError("Date must be in YYYYMMDD format")
+            
+            target_date = datetime.strptime(date_str, '%Y%m%d')
+            print(f"📅 Processing emails for: {target_date.strftime('%Y-%m-%d')}")
+            return target_date
+            
+        except ValueError as e:
+            print(f"❌ Invalid date format: {date_str}")
+            print(f"Error: {e}")
+            print("Usage: python script.py [YYYYMMDD]")
+            sys.exit(1)
+    else:
+        # Use today's date
+        target_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        print(f"📅 No date provided, using today: {target_date.strftime('%Y-%m-%d')}")
+        return target_date
+
+TARGET_DATE = parse_date_argument()
+
+# Validate environment variables
+required_vars = [CLIENT_ID, CLIENT_SECRET, TENANT_ID, EMAILS_STR, INTERNAL_DOMAINS_STR]
+missing_vars = []
+if not CLIENT_ID: missing_vars.append('CLIENT_ID')
+if not CLIENT_SECRET: missing_vars.append('CLIENT_SECRET')
+if not TENANT_ID: missing_vars.append('TENANT_ID')
+if not EMAILS_STR: missing_vars.append('EMAILS')
+if not INTERNAL_DOMAINS_STR: missing_vars.append('INTERNAL_DOMAINS')
+
+if missing_vars or not EMAILS or not INTERNAL_DOMAINS:
+    print("ERROR: Missing required environment variables in .env file")
+    print("Required variables:")
+    print("  CLIENT_ID, CLIENT_SECRET, TENANT_ID - from Azure App Registration")
+    print("  EMAILS - comma-separated list like: email1@domain.com,email2@domain.com")
+    print("  INTERNAL_DOMAINS - comma-separated list like: company.com,subsidiary.com")
+    print("Optional variables:")
+    print("  EXCLUDE_DOMAINS - comma-separated list like: spam.com,marketing.com")
+    print("  MAX_EMAIL_SIZE - maximum email body size in characters (e.g., 50000)")
+    if missing_vars:
+        print(f"Missing: {', '.join(missing_vars)}")
+    if not INTERNAL_DOMAINS:
+        print("INTERNAL_DOMAINS is required for internal/external categorization")
+    exit(1)
+
+AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+SCOPE = ["https://graph.microsoft.com/.default"]
+
+def extract_domain_from_email(email_address):
+    """Extract domain from email address"""
+    if not email_address:
+        return None
+    try:
+        return email_address.split('@')[1].lower()
+    except IndexError:
+        return None
+
+def is_internal_domain(email_address):
+    """Check if email address is from an internal company domain"""
+    domain = extract_domain_from_email(email_address)
+    return domain in INTERNAL_DOMAINS if domain else False
+
+def is_excluded_domain(email_address):
+    """Check if email address is from an excluded domain"""
+    if not EXCLUDE_DOMAINS:
+        return False
+    domain = extract_domain_from_email(email_address)
+    return domain in EXCLUDE_DOMAINS if domain else False
+
+def should_exclude_email(from_email, to_recipients, cc_recipients=None, bcc_recipients=None):
+    """
+    Determine if email should be excluded based on excluded domains
+    Exclude if ANY participant is from an excluded domain
+    """
+    if not EXCLUDE_DOMAINS:
+        return False
+        
+    all_participants = []
+    
+    # Add sender
+    if from_email:
+        all_participants.append(from_email)
+    
+    # Add all recipients
+    for recipient_list in [to_recipients, cc_recipients, bcc_recipients]:
+        if recipient_list:
+            for recipient in recipient_list:
+                if isinstance(recipient, dict) and 'address' in recipient:
+                    all_participants.append(recipient['address'])
+                elif isinstance(recipient, str):
+                    all_participants.append(recipient)
+    
+    # Exclude if any participant is from excluded domain
+    for email in all_participants:
+        if email and is_excluded_domain(email):
+            return True
+    
+    return False
+
+def is_email_too_large(email_body_content):
+    """Check if email content exceeds size limit"""
+    if not MAX_EMAIL_SIZE:
+        return False
+    
+    if not email_body_content:
+        return False
+    
+    # Get content from body structure
+    content = ""
+    if isinstance(email_body_content, dict):
+        content = email_body_content.get('content', '')
+    else:
+        content = str(email_body_content)
+    
+    return len(content) > MAX_EMAIL_SIZE
+
+def is_email_on_target_date(email, target_date):
+    """Check if email was sent or received on target date (post-processing filter)"""
+    target_start = target_date
+    target_end = target_date + timedelta(days=1)
+    
+    # Check received date
+    received_date = email.get('receivedDateTime')
+    if received_date:
+        try:
+            received_dt = datetime.fromisoformat(received_date.replace('Z', '+00:00'))
+            if target_start <= received_dt.replace(tzinfo=None) < target_end:
+                return True
+        except:
+            pass
+    
+    # Check sent date
+    sent_date = email.get('sentDateTime')
+    if sent_date:
+        try:
+            sent_dt = datetime.fromisoformat(sent_date.replace('Z', '+00:00'))
+            if target_start <= sent_dt.replace(tzinfo=None) < target_end:
+                return True
+        except:
+            pass
+    
+    return False
+
+def categorize_email_type(from_email, to_recipients, cc_recipients=None, bcc_recipients=None):
+    """
+    Categorize email as internal or external based on sender and recipients
+    Internal: All participants (sender + all recipients) are from INTERNAL company domains
+    External: At least one participant is from external (non-internal) domains
+    """
+    all_participants = []
+    
+    # Add sender
+    if from_email:
+        all_participants.append(from_email)
+    
+    # Add all recipients
+    for recipient_list in [to_recipients, cc_recipients, bcc_recipients]:
+        if recipient_list:
+            for recipient in recipient_list:
+                if isinstance(recipient, dict) and 'address' in recipient:
+                    all_participants.append(recipient['address'])
+                elif isinstance(recipient, str):
+                    all_participants.append(recipient)
+    
+    # Check if all participants are from internal company domains
+    for email in all_participants:
+        if email and not is_internal_domain(email):
+            return 'external'
+    
+    return 'internal' if all_participants else 'unknown'
+
+def clean_html_content(html_content):
+    """Clean HTML content for better readability"""
+    if not html_content:
+        return ""
+    
+    # Remove HTML tags using regex
+    clean_text = re.sub(r'<[^>]+>', '', html_content)
+    # Replace HTML entities
+    clean_text = clean_text.replace('&nbsp;', ' ')
+    clean_text = clean_text.replace('&amp;', '&')
+    clean_text = clean_text.replace('&lt;', '<')
+    clean_text = clean_text.replace('&gt;', '>')
+    clean_text = clean_text.replace('&quot;', '"')
+    # Clean up excessive whitespace
+    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+    
+    return clean_text
+
+def get_access_token():
+    """Get access token using client credentials flow"""
+    print("🔐 Authenticating with Microsoft Graph...")
+    
+    app = ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=AUTHORITY,
+        client_credential=CLIENT_SECRET
+    )
+    
+    result = app.acquire_token_for_client(scopes=SCOPE)
+    
+    if "access_token" in result:
+        print("✅ Authentication successful!")
+        return result['access_token']
+    else:
+        print("❌ Authentication failed!")
+        print(f"Error: {result.get('error_description', 'Unknown error')}")
+        return None
+
+def get_date_filter_string(target_date):
+    """Create Microsoft Graph date filter string for the target date"""
+    # Start of target date
+    start_date = target_date
+    # End of target date (start of next day)  
+    end_date = start_date + timedelta(days=1)
+    
+    # Format for Microsoft Graph API (ISO 8601)
+    start_str = start_date.strftime('%Y-%m-%dT00:00:00Z')
+    end_str = end_date.strftime('%Y-%m-%dT00:00:00Z')
+    
+    # Use only receivedDateTime for filtering (simpler, more reliable)
+    # We'll catch sent emails in post-processing
+    filter_string = f"receivedDateTime ge {start_str} and receivedDateTime lt {end_str}"
+    
+    return filter_string
+
+def query_user_emails_for_date(access_token, user_email, target_date):
+    """Query emails for a specific user for a specific date (using receivedDateTime only)"""
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+        'Prefer': 'outlook.body-content-type="text"'  # Get body as text instead of HTML
+    }
+    
+    url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages"
+    
+    # Simple approach: just filter by receivedDateTime for the target date
+    start_date = target_date
+    end_date = target_date + timedelta(days=1)
+    
+    start_str = start_date.strftime('%Y-%m-%dT00:00:00Z')
+    end_str = end_date.strftime('%Y-%m-%dT00:00:00Z')
+    
+    # Use simple receivedDateTime filter - most reliable
+    date_filter = f"receivedDateTime ge {start_str} and receivedDateTime lt {end_str}"
+    
+    params = {
+        '$filter': date_filter,
+        '$select': 'id,subject,body,bodyPreview,from,toRecipients,ccRecipients,bccRecipients,sentDateTime,receivedDateTime,hasAttachments,importance,isRead,conversationId,internetMessageId',
+        '$orderby': 'receivedDateTime desc',
+        '$top': 999
+    }
+    
+    try:
+        print(f"📧 Querying emails received by {user_email} on {target_date.strftime('%Y-%m-%d')}...")
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        result = response.json()
+        
+        # Apply domain and size filters only
+        if 'value' in result:
+            original_count = len(result['value'])
+            filtered_emails = []
+            excluded_by_domain = 0
+            excluded_by_size = 0
+            
+            for email in result['value']:
+                # Extract participant emails for domain filtering
+                from_email = None
+                from_field = email.get('from', {})
+                if from_field and 'emailAddress' in from_field:
+                    from_email = from_field['emailAddress'].get('address')
+                
+                def extract_recipient_emails(recipients_list):
+                    if not recipients_list:
+                        return []
+                    return [
+                        recipient.get('emailAddress', {}).get('address')
+                        for recipient in recipients_list
+                        if 'emailAddress' in recipient and recipient.get('emailAddress', {}).get('address')
+                    ]
+                
+                to_emails = extract_recipient_emails(email.get('toRecipients', []))
+                cc_emails = extract_recipient_emails(email.get('ccRecipients', []))
+                bcc_emails = extract_recipient_emails(email.get('bccRecipients', []))
+                
+                # Apply domain exclusion filter
+                if should_exclude_email(from_email, to_emails, cc_emails, bcc_emails):
+                    excluded_by_domain += 1
+                    continue
+                
+                # Apply size filter
+                body_content = email.get('body', {})
+                if is_email_too_large(body_content):
+                    excluded_by_size += 1
+                    continue
+                
+                # Email passed all filters
+                filtered_emails.append(email)
+            
+            result['value'] = filtered_emails
+            
+            print(f"   Found {original_count} emails received on {target_date.strftime('%Y-%m-%d')}")
+            if excluded_by_domain > 0:
+                print(f"   Excluded {excluded_by_domain} emails (excluded domains)")
+            if excluded_by_size > 0:
+                print(f"   Excluded {excluded_by_size} emails (too large)")
+            print(f"   ✅ Final count: {len(filtered_emails)} emails")
+        else:
+            print(f"   No emails found for {target_date.strftime('%Y-%m-%d')}")
+        
+        return result
+    
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error querying emails for {user_email}: {e}")
+        if hasattr(e.response, 'text'):
+            print(f"Response: {e.response.text}")
+        return None
+
+def process_single_email(email, user_email):
+    """Process a single email and extract all relevant information"""
+    # Extract basic email info
+    email_info = {
+        'id': email.get('id'),
+        'subject': email.get('subject', 'No Subject'),
+        'user_email': user_email,
+        'conversation_id': email.get('conversationId'),
+        'internet_message_id': email.get('internetMessageId'),
+        'importance': email.get('importance', 'normal'),
+        'is_read': email.get('isRead', False),
+        'has_attachments': email.get('hasAttachments', False)
+    }
+    
+    # Process sender (from) information
+    from_field = email.get('from', {})
+    from_email = None
+    if from_field and 'emailAddress' in from_field:
+        from_email = from_field['emailAddress'].get('address')
+        email_info['from'] = {
+            'name': from_field['emailAddress'].get('name'),
+            'address': from_email
+        }
+    else:
+        email_info['from'] = {'name': None, 'address': None}
+    
+    # Process recipients
+    def extract_recipients(recipients_list):
+        if not recipients_list:
+            return []
+        return [
+            {
+                'name': recipient.get('emailAddress', {}).get('name'),
+                'address': recipient.get('emailAddress', {}).get('address')
+            }
+            for recipient in recipients_list
+            if 'emailAddress' in recipient
+        ]
+    
+    to_recipients = extract_recipients(email.get('toRecipients', []))
+    cc_recipients = extract_recipients(email.get('ccRecipients', []))
+    bcc_recipients = extract_recipients(email.get('bccRecipients', []))
+    
+    email_info['to_recipients'] = to_recipients
+    email_info['cc_recipients'] = cc_recipients
+    email_info['bcc_recipients'] = bcc_recipients
+    
+    # Categorize as internal/external
+    email_type = categorize_email_type(from_email, to_recipients, cc_recipients, bcc_recipients)
+    email_info['email_type'] = email_type
+    
+    # Add domain analysis for transparency
+    email_info['domain_analysis'] = {
+        'from_domain': extract_domain_from_email(from_email),
+        'from_internal': is_internal_domain(from_email),
+        'to_domains': [extract_domain_from_email(r['address']) for r in to_recipients if r['address']],
+        'all_participants_internal': email_type == 'internal'
+    }
+    
+    # Process dates
+    sent_date = email.get('sentDateTime')
+    received_date = email.get('receivedDateTime')
+    
+    email_info['sent_datetime'] = sent_date
+    email_info['received_datetime'] = received_date
+    
+    # Add formatted dates for readability
+    for date_field, raw_date in [('sent_date_formatted', sent_date), ('received_date_formatted', received_date)]:
+        if raw_date:
+            try:
+                date_obj = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                email_info[date_field] = date_obj.strftime('%Y-%m-%d %H:%M:%S UTC')
+            except:
+                email_info[date_field] = raw_date
+        else:
+            email_info[date_field] = None
+    
+    # Process email body
+    body_content = email.get('body', {})
+    if body_content:
+        content_type = body_content.get('contentType', 'HTML')
+        raw_content = body_content.get('content', '')
+        
+        email_info['body'] = {
+            'content_type': content_type,
+            'cleaned_content': clean_html_content(raw_content) if content_type.lower() == 'html' else raw_content
+        }
+    else:
+        email_info['body'] = {
+            'content_type': None,
+            'cleaned_content': ''
+        }
+    
+    # Add body preview
+    email_info['body_preview'] = email.get('bodyPreview', '')
+    
+    # Calculate token counts for this email
+    token_counts = calculate_email_tokens(email_info)
+    email_info['token_analysis'] = token_counts
+    
+    # Add metadata
+    email_info['processing_timestamp'] = datetime.now().isoformat()
+    
+    return email_info
+
+def save_daily_emails_to_json(all_emails_data, target_date, filename=None):
+    """Save daily email data to a JSON file"""
+    if filename is None:
+        date_str = target_date.strftime('%Y%m%d')
+        filename = f"emails_daily_{date_str}.json"
+    
+    # Calculate statistics including token counts
+    total_emails = sum(len(user_data['emails']) for user_data in all_emails_data.values())
+    
+    internal_count = sum(len([e for e in user_data['emails'] if e.get('email_type') == 'internal']) 
+                        for user_data in all_emails_data.values())
+    external_count = sum(len([e for e in user_data['emails'] if e.get('email_type') == 'external']) 
+                        for user_data in all_emails_data.values())
+    
+    # Calculate token statistics
+    token_stats = {
+        'total_tokens': 0,
+        'total_subject_tokens': 0,
+        'total_body_tokens': 0,
+        'total_body_preview_tokens': 0,
+        'internal_tokens': 0,
+        'external_tokens': 0,
+        'average_tokens_per_email': 0,
+        'tokenizer_available': TOKENIZER_AVAILABLE
+    }
+    
+    if TOKENIZER_AVAILABLE:
+        for user_data in all_emails_data.values():
+            for email in user_data['emails']:
+                token_analysis = email.get('token_analysis', {})
+                
+                # Add to total tokens
+                email_total_tokens = token_analysis.get('total_tokens', 0)
+                token_stats['total_tokens'] += email_total_tokens
+                token_stats['total_subject_tokens'] += token_analysis.get('subject_tokens', 0)
+                token_stats['total_body_tokens'] += token_analysis.get('body_tokens', 0)
+                token_stats['total_body_preview_tokens'] += token_analysis.get('body_preview_tokens', 0)
+                
+                # Add to internal/external token counts
+                if email.get('email_type') == 'internal':
+                    token_stats['internal_tokens'] += email_total_tokens
+                elif email.get('email_type') == 'external':
+                    token_stats['external_tokens'] += email_total_tokens
+        
+        # Calculate average tokens per email
+        if total_emails > 0:
+            token_stats['average_tokens_per_email'] = round(token_stats['total_tokens'] / total_emails, 2)
+    
+    # Create export data structure
+    export_data = {
+        'export_info': {
+            'timestamp': datetime.now().isoformat(),
+            'target_date': target_date.strftime('%Y-%m-%d'),
+            'target_date_formatted': target_date.strftime('%A, %B %d, %Y'),
+            'internal_domains': INTERNAL_DOMAINS,
+            'filtering_config': {
+                'exclude_domains': EXCLUDE_DOMAINS if EXCLUDE_DOMAINS else None,
+                'max_email_size': MAX_EMAIL_SIZE
+            },
+            'statistics': {
+                'total_emails': total_emails,
+                'internal_emails': internal_count,
+                'external_emails': external_count,
+                'total_users': len(all_emails_data),
+                'token_analysis': token_stats
+            },
+            'users': list(all_emails_data.keys())
+        },
+        'emails_by_user': all_emails_data
+    }
+    
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, indent=2, ensure_ascii=False)
+        
+        print(f"✅ Successfully saved daily email data to: {filename}")
+        print(f"📊 Export summary for {target_date.strftime('%Y-%m-%d')}:")
+        print(f"   - Total emails: {total_emails}")
+        print(f"   - Internal emails: {internal_count}")
+        print(f"   - External emails: {external_count}")
+        print(f"   - Total users: {export_data['export_info']['statistics']['total_users']}")
+        
+        # Display token statistics if available
+        if TOKENIZER_AVAILABLE and total_emails > 0:
+            print(f"🔤 Token Analysis:")
+            print(f"   - Total tokens: {token_stats['total_tokens']:,}")
+            print(f"   - Average tokens per email: {token_stats['average_tokens_per_email']}")
+            print(f"   - Internal email tokens: {token_stats['internal_tokens']:,}")
+            print(f"   - External email tokens: {token_stats['external_tokens']:,}")
+            print(f"   - Body content tokens: {token_stats['total_body_tokens']:,}")
+            print(f"   - Subject tokens: {token_stats['total_subject_tokens']:,}")
+        elif not TOKENIZER_AVAILABLE:
+            print(f"⚠️  Token analysis not available (tiktoken not installed)")
+        
+        print(f"   - File size: {os.path.getsize(filename) / 1024:.1f} KB")
+        
+        return filename
+        
+    except Exception as e:
+        print(f"❌ Error saving to JSON file: {e}")
+        return None
+
+def display_daily_summary(all_emails_data, target_date):
+    """Display a summary of the collected email data for the target date"""
+    print(f"\n📋 DAILY EMAIL SUMMARY - {target_date.strftime('%A, %B %d, %Y')}")
+    print("=" * 70)
+    print(f"🏢 Internal domains: {', '.join(INTERNAL_DOMAINS)}")
+    if EXCLUDE_DOMAINS:
+        print(f"🚫 Excluded domains: {', '.join(EXCLUDE_DOMAINS)}")
+    if MAX_EMAIL_SIZE:
+        print(f"📏 Max email size: {MAX_EMAIL_SIZE:,} characters")
+    
+    total_emails = 0
+    total_internal = 0
+    total_external = 0
+    total_tokens = 0
+    
+    for user_email, user_data in all_emails_data.items():
+        emails = user_data['emails']
+        total_emails += len(emails)
+        
+        internal_emails = [e for e in emails if e.get('email_type') == 'internal']
+        external_emails = [e for e in emails if e.get('email_type') == 'external']
+        
+        total_internal += len(internal_emails)
+        total_external += len(external_emails)
+        
+        # Calculate token counts for this user
+        user_tokens = 0
+        if TOKENIZER_AVAILABLE:
+            for email in emails:
+                user_tokens += email.get('token_analysis', {}).get('total_tokens', 0)
+            total_tokens += user_tokens
+        
+        print(f"\n👤 {user_email}")
+        print(f"   📧 Total emails: {len(emails)}")
+        print(f"   🏠 Internal emails: {len(internal_emails)}")
+        print(f"   🌐 External emails: {len(external_emails)}")
+        
+        if TOKENIZER_AVAILABLE and emails:
+            avg_tokens = round(user_tokens / len(emails), 1) if len(emails) > 0 else 0
+            print(f"   🔤 Total tokens: {user_tokens:,} (avg: {avg_tokens} per email)")
+        
+        if emails:
+            # Show time range for the day
+            times = []
+            for email in emails:
+                if email.get('received_datetime'):
+                    try:
+                        dt = datetime.fromisoformat(email['received_datetime'].replace('Z', '+00:00'))
+                        times.append(dt.strftime('%H:%M'))
+                    except:
+                        pass
+            
+            if times:
+                times.sort()
+                print(f"   ⏰ Time range: {times[0]} - {times[-1]}")
+            
+            # Show ALL subjects with timestamps and token counts
+            print(f"   📝 All emails:")
+            for i, email in enumerate(emails, 1):
+                email_type_icon = "🏠" if email.get('email_type') == 'internal' else "🌐"
+                subject = email['subject'][:50] + "..." if len(email['subject']) > 50 else email['subject']
+                
+                # Get timestamp for display
+                timestamp = "??:??"
+                if email.get('received_datetime'):
+                    try:
+                        dt = datetime.fromisoformat(email['received_datetime'].replace('Z', '+00:00'))
+                        timestamp = dt.strftime('%H:%M')
+                    except:
+                        pass
+                elif email.get('sent_datetime'):
+                    try:
+                        dt = datetime.fromisoformat(email['sent_datetime'].replace('Z', '+00:00'))
+                        timestamp = dt.strftime('%H:%M')
+                    except:
+                        pass
+                
+                # Get token count for display
+                token_info = ""
+                if TOKENIZER_AVAILABLE:
+                    token_count = email.get('token_analysis', {}).get('total_tokens', 0)
+                    token_info = f" ({token_count:,} tokens)" if token_count > 0 else " (0 tokens)"
+                
+                print(f"      {i:2d}. {timestamp} {email_type_icon} {subject}{token_info}")
+    
+    print(f"\n🎯 DAILY TOTAL: {total_emails} emails")
+    print(f"🏠 Internal: {total_internal} | 🌐 External: {total_external}")
+    
+    if TOKENIZER_AVAILABLE and total_emails > 0:
+        avg_tokens_per_email = round(total_tokens / total_emails, 1)
+        print(f"🔤 Total tokens: {total_tokens:,} (avg: {avg_tokens_per_email} per email)")
+    elif not TOKENIZER_AVAILABLE:
+        print(f"⚠️  Token analysis not available (install tiktoken library)")
+    
+    print("=" * 70)
+
+def main():
+    """Main execution function"""
+    print("🚀 Starting Daily Microsoft Graph Email Query")
+    print(f"Target date: {TARGET_DATE.strftime('%A, %B %d, %Y')}")
+    print(f"Strategy: Process all emails RECEIVED on target date")
+    print(f"Target users: {', '.join(EMAILS)}")
+    print(f"Internal domains: {', '.join(INTERNAL_DOMAINS)}")
+    
+    # Show filtering configuration
+    if EXCLUDE_DOMAINS:
+        print(f"Exclude domains: {', '.join(EXCLUDE_DOMAINS)}")
+    if MAX_EMAIL_SIZE:
+        print(f"Max email size: {MAX_EMAIL_SIZE:,} characters")
+    
+    print("\n⚠️  IMPORTANT: Make sure your app has 'Mail.Read' permission")
+    
+    # Get access token
+    access_token = get_access_token()
+    if not access_token:
+        return
+    
+    # Collect emails for all users for the target date
+    all_emails_data = {}
+    
+    for user in EMAILS:
+        print(f"\n{'='*25} {user} {'='*25}")
+        
+        # Get emails for the specific date
+        email_data = query_user_emails_for_date(access_token, user, TARGET_DATE)
+        
+        if email_data and 'value' in email_data:
+            emails = email_data['value']
+            processed_emails = []
+            
+            print(f"📝 Processing {len(emails)} emails individually...")
+            
+            # Process each email individually
+            for i, email in enumerate(emails, 1):
+                try:
+                    processed_email = process_single_email(email, user)
+                    processed_emails.append(processed_email)
+                    
+                    # Show progress for large batches
+                    if len(emails) > 10 and i % 10 == 0:
+                        print(f"   Processed {i}/{len(emails)} emails...")
+                        
+                except Exception as e:
+                    print(f"   ⚠️  Error processing email {i}: {e}")
+                    continue
+            
+            # Count internal/external and tokens
+            internal_count = len([e for e in processed_emails if e.get('email_type') == 'internal'])
+            external_count = len([e for e in processed_emails if e.get('email_type') == 'external'])
+            
+            # Calculate total tokens for this user
+            total_user_tokens = 0
+            if TOKENIZER_AVAILABLE:
+                total_user_tokens = sum(e.get('token_analysis', {}).get('total_tokens', 0) for e in processed_emails)
+            
+            all_emails_data[user] = {
+                'user_email': user,
+                'target_date': TARGET_DATE.strftime('%Y-%m-%d'),
+                'query_timestamp': datetime.now().isoformat(),
+                'emails_count': len(processed_emails),
+                'internal_count': internal_count,
+                'external_count': external_count,
+                'total_tokens': total_user_tokens if TOKENIZER_AVAILABLE else None,
+                'emails': processed_emails
+            }
+            
+            print(f"✅ Processed {len(processed_emails)} emails for {user}")
+            print(f"🏠 Internal: {internal_count} | 🌐 External: {external_count}")
+            if TOKENIZER_AVAILABLE:
+                avg_tokens = round(total_user_tokens / len(processed_emails), 1) if len(processed_emails) > 0 else 0
+                print(f"🔤 Tokens: {total_user_tokens:,} (avg: {avg_tokens} per email)")
+            
+        else:
+            all_emails_data[user] = {
+                'user_email': user,
+                'target_date': TARGET_DATE.strftime('%Y-%m-%d'),
+                'query_timestamp': datetime.now().isoformat(),
+                'emails_count': 0,
+                'internal_count': 0,
+                'external_count': 0,
+                'total_tokens': 0 if TOKENIZER_AVAILABLE else None,
+                'emails': [],
+                'error': 'No emails found for target date'
+            }
+            print(f"📭 No emails found for {user} on {TARGET_DATE.strftime('%Y-%m-%d')}")
+    
+    # Display summary
+    display_daily_summary(all_emails_data, TARGET_DATE)
+    
+    # Save to JSON file
+    print(f"\n💾 Saving daily email data to JSON file...")
+    json_filename = save_daily_emails_to_json(all_emails_data, TARGET_DATE)
+    
+    if json_filename:
+        print(f"\n✅ Daily email export completed successfully!")
+        print(f"📁 File saved as: {json_filename}")
+
+    else:
+        print(f"\n❌ Daily email export failed!")
+
+if __name__ == "__main__":
+    main()
+<end backend\daily_batch_processing.py>
+
+<start backend\email_utils.py>
+"""
+Email Utils Module for Client Intelligence Reports
+Handles email formatting and sending functionality
+NOW USES SIMPLE IDENTIFIER PARSING FOR ROBUST HIGHLIGHTING
+
+Usage:
+  from email_utils import send_email_report, initialize_email_client
+"""
+
+import os
+import re
+import json
+from datetime import datetime
+from azure.communication.email import EmailClient
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Section icons for the 13 predictable analysis sections
+SECTION_ICONS = {
+    "1. Relationship Strength Assessment": "🤝",
+    "2. Communication Patterns": "📞", 
+    "3. Key Stakeholder Analysis": "👥",
+    "4. Business Context & Insights": "💼",
+    "5. Sentiment & Tone Analysis": "😊",
+    "6. Client Health & Satisfaction Indicators": "📊",
+    "7. Content Themes": "🏷️",
+    "8. Coordination & Visibility Issues": "👀",
+    "9. Knowledge Management Gaps": "🧠",
+    "10. Action Items & Next Steps": "✅",
+    "11. Risk Factors": "⚠️",
+    "12. Opportunities": "🚀",
+    "13. Strategic Recommendations": "🎯"
+}
+
+def parse_simple_identifiers(markdown_content):
+    """Parse simple identifiers and convert to inline-styled HTML"""
+    
+    # Parse [PERSON: Name (email@company.com)] and format as "Name (Company)"
+    def format_person_contact(match):
+        content = match.group(1)
+        
+        # Check if it has email format: "Name (email@domain.com)"
+        email_pattern = r'^(.+?)\s*\(([^@]+)@([^.]+)\.com\)$'
+        email_match = re.match(email_pattern, content.strip())
+        
+        if email_match:
+            name = email_match.group(1).strip()
+            company_domain = email_match.group(3).strip()
+            # Capitalize company name (blackstone -> Blackstone)
+            company_name = company_domain.capitalize()
+            formatted_content = f"{name} ({company_name})"
+        else:
+            # If no email format, use as-is
+            formatted_content = content
+        
+        return f'<span style="background: #e3f2fd; color: #0d47a1; padding: 2px 6px; border-radius: 3px; font-weight: 600;">{formatted_content}</span>'
+    
+    # Apply the formatting
+    markdown_content = re.sub(
+        r'\[(?:PERSON|CONTACT):\s*([^\]]+)\]',
+        format_person_contact,
+        markdown_content
+    )
+    
+    # Parse [DATE: any date text] - unchanged
+    markdown_content = re.sub(
+        r'\[DATE:\s*([^\]]+)\]',
+        r'<span style="background: #f3e5f5; color: #4a148c; padding: 2px 6px; border-radius: 3px; font-weight: 500;">\1</span>',
+        markdown_content
+    )
+    
+    # Parse [HIGHLIGHT: important text] - unchanged  
+    markdown_content = re.sub(
+        r'\[HIGHLIGHT:\s*([^\]]+)\]',
+        r'<span style="font-weight: 600; color: #111827;">\1</span>',
+        markdown_content
+    )
+    
+    return markdown_content
+
+def add_section_icons(markdown_content):
+    """Add icons to the 13 predictable H2 sections"""
+    for section, icon in SECTION_ICONS.items():
+        pattern = f"## {re.escape(section)}"
+        replacement = f'## {icon} {section}'
+        markdown_content = re.sub(pattern, replacement, markdown_content)
+    
+    return markdown_content
+
+def markdown_to_email_html(markdown_content):
+    """Convert markdown to email-safe HTML with simple inline styling"""
+    if not markdown_content:
+        return ""
+
+    import markdown
+    
+    # Step 1: Parse our simple identifiers BEFORE markdown conversion
+    markdown_content = parse_simple_identifiers(markdown_content)
+    
+    # Step 2: Add icons to predictable H2 sections
+    markdown_content = add_section_icons(markdown_content)
+    
+    # Step 3: Convert markdown to HTML
+    html = markdown.markdown(markdown_content, extensions=['extra', 'sane_lists'])
+    
+    # Step 4: Apply inline styles to HTML elements (no CSS classes)
+    # Headers - BLACK like before
+    html = re.sub(
+        r'<h1>([^<]+)</h1>',
+        r'<h1 style="color: #000000; font-size: 26px; margin: 25px 0 15px 0; border-bottom: 2px solid #ddd; padding-bottom: 8px; font-weight: 700;">\1</h1>',
+        html
+    )
+    
+    html = re.sub(
+        r'<h2>([^<]+)</h2>',
+        r'<h2 style="color: #000000; font-size: 22px; margin: 30px 0 15px 0; padding: 12px 16px; background: #f1f5f9; border-left: 4px solid #3b82f6; border-radius: 4px; font-weight: 700;">\1</h2>',
+        html
+    )
+    
+    html = re.sub(
+        r'<h3>([^<]+)</h3>',
+        r'<h3 style="color: #374151; font-size: 18px; margin: 20px 0 10px 0; font-weight: 600;">\1</h3>',
+        html
+    )
+    
+    html = re.sub(
+        r'<h4>([^<]+)</h4>',
+        r'<h4 style="color: #4b5563; font-size: 16px; margin: 18px 0 8px 0; font-weight: 600;">\1</h4>',
+        html
+    )
+    
+    # Paragraphs
+    html = re.sub(
+        r'<p>',
+        r'<p style="margin: 14px 0; line-height: 1.6; font-size: 15px;">',
+        html
+    )
+    
+    # Lists
+    html = re.sub(
+        r'<ul>',
+        r'<ul style="margin: 16px 0; padding-left: 20px;">',
+        html
+    )
+    
+    html = re.sub(
+        r'<ol>',
+        r'<ol style="margin: 16px 0; padding-left: 20px;">',
+        html
+    )
+    
+    html = re.sub(
+        r'<li>',
+        r'<li style="margin: 8px 0; line-height: 1.5;">',
+        html
+    )
+    
+    # Strong/Bold
+    html = re.sub(
+        r'<strong>([^<]+)</strong>',
+        r'<strong style="color: #111827; font-weight: 600;">\1</strong>',
+        html
+    )
+    
+    # Emphasis/Italic
+    html = re.sub(
+        r'<em>([^<]+)</em>',
+        r'<em style="color: #6b7280; font-style: italic;">\1</em>',
+        html
+    )
+    
+    # Blockquotes
+    html = re.sub(
+        r'<blockquote>',
+        r'<blockquote style="border-left: 4px solid #e5e7eb; margin: 20px 0; padding: 15px 20px; background: #f9fafb; color: #6b7280; font-style: italic;">',
+        html
+    )
+    
+    # Code
+    html = re.sub(
+        r'<code>([^<]+)</code>',
+        r'<code style="background: #f1f5f9; padding: 2px 5px; border-radius: 3px; font-size: 14px; color: #1f2937;">\1</code>',
+        html
+    )
+    
+    # Wrap everything in a container - WIDER now
+    final_html = f"""
+    <div style="font-family: Arial, Helvetica, sans-serif; color: #374151; line-height: 1.6; max-width: 100%;">
+        {html}
+    </div>
+    """
+    
+    return final_html.strip()
+
+def initialize_email_client():
+    """Initialize Azure Email Client"""
+    email_connection_string = os.getenv('EMAIL_CONNECTION_STRING')
+    report_recipients_str = os.getenv('REPORT_RECIPIENTS')
+    
+    # Parse recipients
+    if report_recipients_str:
+        report_recipients = [email.strip() for email in report_recipients_str.split(',') if email.strip()]
+    else:
+        report_recipients = []
+    
+    # Initialize client
+    try:
+        if email_connection_string:
+            email_client = EmailClient.from_connection_string(email_connection_string)
+            email_available = True
+            print("✅ Azure Email Client initialized successfully")
+        else:
+            email_client = None
+            email_available = False
+            print("⚠️  Warning: EMAIL_CONNECTION_STRING not found - will not send email reports")
+    except Exception as e:
+        print(f"⚠️  Warning: Azure Email Client not available - {e}")
+        email_client = None
+        email_available = False
+    
+    return email_client, email_available, report_recipients
+
+def load_insights_from_json(json_file_path):
+    """Load insights and structured_dataset from JSON file"""
+    try:
+        with open(json_file_path, 'r', encoding='utf-8') as f:
+            report_data = json.load(f)
+        
+        insights = report_data.get('crm_insights')
+        structured_dataset = report_data.get('structured_dataset')
+        
+        if not insights or not structured_dataset:
+            raise Exception("Invalid JSON structure - missing crm_insights or structured_dataset")
+        
+        return insights, structured_dataset
+        
+    except Exception as e:
+        raise Exception(f"Failed to load report from JSON: {e}")
+
+def send_email_report(insights, structured_dataset, report_filename, email_client=None, email_available=False, report_recipients=None):
+    """Send the CRM report via email using simplified markdown-to-HTML conversion"""
+    
+    # Handle case where insights is actually a JSON file path
+    if isinstance(insights, str) and insights.endswith('.json'):
+        print(f"📄 Loading insights from JSON file: {insights}")
+        try:
+            insights, structured_dataset = load_insights_from_json(insights)
+            report_filename = insights  # Use the JSON filename as report filename
+        except Exception as e:
+            print(f"❌ Failed to load insights from JSON: {e}")
+            return False
+    
+    # Initialize email if not provided
+    if email_client is None or report_recipients is None:
+        email_client, email_available, report_recipients = initialize_email_client()
+    
+    if not email_available or not email_client or not report_recipients:
+        print("📧 Email sending skipped - no email configuration")
+        return False
+    
+    try:
+        client_domain = structured_dataset['client_domain']
+        stats = structured_dataset['statistics']
+        
+        # Create email subject
+        subject = f"Client Relationship Report: {client_domain} - {datetime.now().strftime('%Y-%m-%d')}"
+        
+        # Get markdown analysis and convert to HTML
+        ai_analysis_markdown = insights.get('ai_analysis_markdown', 'No analysis available')
+        
+        # Convert markdown to HTML with simple parsing
+        print("🔄 Converting Markdown to HTML with icons and automatic highlighting...")
+        ai_analysis_html = markdown_to_email_html(ai_analysis_markdown)
+        
+        # Create summary for email body with cost calculation
+        token_info = insights.get('token_analysis', {})
+        cost_summary = ""
+        if token_info.get('tokenizer_available'):
+            input_tokens = token_info.get('input_prompt_tokens', 0)
+            output_tokens = token_info.get('output_response_tokens', 0)
+            
+            # Calculate costs: $1.25 per 1M input tokens, $10.00 per 1M output tokens
+            input_cost = (input_tokens / 1_000_000) * 1.25
+            output_cost = (output_tokens / 1_000_000) * 10.00
+            total_cost = input_cost + output_cost
+            
+            cost_summary = f"<br><strong>Analysis Cost:</strong> ${total_cost:.2f} (${input_cost:.2f} input + ${output_cost:.2f} output)"
+        
+        # Format executive summary
+        client_name = client_domain.split('.')[0]
+        summary_stats = f"""<strong>Client:</strong> {client_name}<br>
+<strong>Analysis Period:</strong> {structured_dataset['analysis_period_days']} days<br>
+<strong>Total Interactions:</strong> {stats['total_interactions']} emails<br>
+<strong>Employees Involved:</strong> {structured_dataset['total_employees_queried']}<br>
+<strong>Report Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{cost_summary}"""
+        
+        # Simple HTML email template with inline styles only - WIDER and BLACK headers
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Client Relationship Report: {client_domain}</title>
+            </head>
+            <body style="font-family: Arial, Helvetica, sans-serif; line-height: 1.6; color: #374151; max-width: 1000px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+                
+                <!-- Header -->
+                <div style="text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #e5e7eb;">
+                    <h1 style="color: #111827; font-size: 28px; font-weight: 700; margin: 0;">
+                        🤖 Client Relationship Report
+                    </h1>
+                    <p style="color: #6b7280; font-size: 16px; margin: 8px 0 0 0;">
+                        {client_domain}
+                    </p>
+                </div>
+                
+                <!-- Executive Summary -->
+                <div style="margin-bottom: 30px;">
+                    <h2 style="color: #000000; font-size: 20px; font-weight: 700; margin: 0 0 15px 0;">
+                        📊 Executive Summary
+                    </h2>
+                    <div style="background-color: #f8fafc; padding: 20px; border-radius: 6px; border-left: 4px solid #3b82f6;">
+                        <div style="color: #374151; line-height: 1.6; font-size: 15px;">{summary_stats}</div>
+                    </div>
+                </div>
+                
+                <!-- AI Analysis -->
+                <div style="margin-bottom: 30px;">
+                    <h2 style="color: #000000; font-size: 20px; font-weight: 700; margin: 0 0 15px 0;">
+                        🧠 AI Analysis
+                    </h2>
+                    <div style="background-color: #ffffff; padding: 15px; border: 1px solid #e5e7eb; border-radius: 6px;">
+                        {ai_analysis_html}
+                    </div>
+                </div>
+                
+                
+                
+                <!-- Footer -->
+                <div style="border-top: 1px solid #e5e7eb; padding-top: 20px; text-align: center;">
+                    <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+                        This report was automatically generated by Argus360<br>
+                        Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    </p>
+                </div>
+            </body>
+        </html>
+        """
+        
+        # Plain text version
+        plain_text_summary = re.sub(r'<[^>]+>', '', summary_stats).replace('&nbsp;', ' ')
+        plain_text_analysis = re.sub(r'\[(?:PERSON|CONTACT|DATE|HIGHLIGHT):\s*([^\]]+)\]', r'\1', ai_analysis_markdown)
+        plain_text_analysis = re.sub(r'\*\*(.+?)\*\*', r'\1', plain_text_analysis)
+        plain_text_analysis = re.sub(r'\*(.+?)\*', r'\1', plain_text_analysis)
+        plain_text_analysis = re.sub(r'^#{1,6}\s*(.+)$', r'\1', plain_text_analysis, flags=re.MULTILINE)
+        
+        plain_text = f"""
+Client Relationship Report: {client_domain}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+EXECUTIVE SUMMARY:
+{plain_text_summary}
+
+AI ANALYSIS:
+{plain_text_analysis}
+
+Detailed report with all data available in: {report_filename}
+
+---
+This report was automatically generated by Argus360.
+        """
+        
+        # Prepare recipients
+        recipients = [{"address": email} for email in report_recipients]
+        
+        # Get sender address
+        sender_address = "DoNotReply@7661678a-204d-4779-8642-fd1ac62f90bc.azurecomm.net"
+        
+        message = {
+            "senderAddress": sender_address,
+            "recipients": {
+                "to": recipients
+            },
+            "content": {
+                "subject": subject,
+                "plainText": plain_text,
+                "html": html_content
+            }
+        }
+        
+        print(f"📧 Sending email report to: {', '.join(report_recipients)}")
+        print(f"✅ Applied icons, wider layout, and black headers with automatic highlighting")
+        
+        poller = email_client.begin_send(message)
+        result = poller.result()
+        
+        # Handle different result object types
+        try:
+            if hasattr(result, 'message_id'):
+                message_id = result.message_id
+            elif isinstance(result, dict) and 'message_id' in result:
+                message_id = result['message_id']
+            elif isinstance(result, dict) and 'messageId' in result:
+                message_id = result['messageId']
+            else:
+                message_id = str(result)
+        except:
+            message_id = "Unknown"
+        
+        print(f"✅ Email sent successfully! Message ID: {message_id}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Failed to send email report: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python email_utils.py <path_to_sample_json>")
+        sys.exit(1)
+
+    json_file = sys.argv[1]
+
+    insights, structured_dataset = load_insights_from_json(json_file)
+    email_client, email_available, report_recipients = initialize_email_client()
+
+    send_email_report(
+        insights=insights,
+        structured_dataset=structured_dataset,
+        report_filename=json_file,
+        email_client=email_client,
+        email_available=email_available,
+        report_recipients=report_recipients
+    )
+
+<end backend\email_utils.py>
+
+<start backend\executive_report.py>
+#!/usr/bin/env python3
+"""
+Executive Report Generator (+ Email) - Per-Client Health Version
+Aggregates multiple client CRM reports and produces a single executive summary.
+
+Changes in this version:
+- Replaces single "Overall Health" with **Per-Client Health & Priorities**.
+- Adds color badges for per-client Health: Green / Yellow / Red.
+- Keeps Cross-Client Themes, Top Risks, Opportunities, Actions, KPI Roll-Up, Notes.
+- Email body automatically renders the new section with badges.
+
+Reads three hardcoded JSON reports:
+  - client_report_disney_com_20250901.json
+  - client_report_blackstone_com_20250831.json  (auto-adds .json if omitted)
+  - client_report_soligenceadvisors_com_20250901.json
+
+Outputs:
+  - executive_report_<YYYYMMDD>.json with:
+      - report_info
+      - inputs (files + per-client snippets)
+      - executive_summary_markdown (LLM output)
+      - quick_kpis (computed)
+      - token_analysis (if tiktoken available)
+  - (Optional) Sends an email containing the executive summary.
+
+Env:
+  - GEMINI_API_KEY  (required for LLM unless --skip-ai)
+  - MODEL_NAME      (default: gemini-2.5-flash)
+  - THINKING_BUDGET (default: 20000)
+  - EMAIL_CONNECTION_STRING, REPORT_RECIPIENTS for email
+
+Usage:
+  python executive_report.py [--output filename.json] [--skip-ai] [--send-email]
+"""
+
+import os
+import json
+import re
+import argparse
+from datetime import datetime
+from typing import Dict, Any, List, Tuple
+
+from dotenv import load_dotenv
+
+# Token counting (optional)
+try:
+    import tiktoken
+    TOKENIZER = tiktoken.get_encoding("cl100k_base")
+    TOKENIZER_AVAILABLE = True
+except Exception:
+    TOKENIZER = None
+    TOKENIZER_AVAILABLE = False
+
+# Gemini client
+try:
+    from google import genai
+    from google.genai import types
+    GEMINI_IMPORT_OK = True
+except Exception:
+    GEMINI_IMPORT_OK = False
+
+# Reuse your email utils (no CSS classes; inline styles only)
+from email_utils import initialize_email_client
+
+from prompts import EXECUTIVE_REPORT_PROMPT_TEMPLATE
+
+load_dotenv()
+
+# -----------------------------------------------------------------------------
+# Config
+# -----------------------------------------------------------------------------
+
+HARD_CODED_FILES = [
+    "client_report_disney_com_20250901.json",
+    "client_report_blackstone_com_20250831.json",  # we'll add .json if missing
+    "client_report_soligenceadvisors_com_20250901.json",
+]
+
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "20000"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Executive Report Section Icons
+EXECUTIVE_SECTION_ICONS = {
+    "Per-Client Health & Priorities": "🏥",
+    "Cross-Client Themes": "🔄",
+    "Top Risks": "🚨",
+    "Opportunities": "💎",
+    "Actions": "📋",
+    "Next 7 Days": "🏃",
+    "Next 30 Days": "📅",
+    "Next 90 Days": "🎯",
+    "KPI Roll-Up": "📊",
+    "Notes & Assumptions": "📝"
+}
+
+# -----------------------------------------------------------------------------
+# Utils
+# -----------------------------------------------------------------------------
+
+def _ensure_json_suffix(path: str) -> str:
+    return path if path.lower().endswith(".json") else f"{path}.json"
+
+def _count_tokens(text: str) -> int:
+    if not TOKENIZER_AVAILABLE or not text:
+        return 0
+    try:
+        return len(TOKENIZER.encode(text))
+    except Exception:
+        return 0
+
+def _read_report(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _safe_get(d: Dict[str, Any], path: List[str], default=None):
+    cur = d
+    for key in path:
+        if isinstance(cur, dict) and key in cur:
+            cur = cur[key]
+        else:
+            return default
+    return cur
+
+def _format_client_section(client_name: str, ai_md: str, stats_block: str) -> str:
+    return (
+        f"### {client_name}\n"
+        f"**Stats:** {stats_block}\n\n"
+        f"**AI Summary (verbatim):**\n{ai_md}\n"
+    )
+
+def _derive_client_name(client_domain: str) -> str:
+    if not client_domain:
+        return "Unknown Client"
+    base = client_domain.split(".")[0]
+    # Handle multi-part names nicely (e.g., soligenceadvisors -> "Soligence Advisors")
+    cleaned = base.replace("advisors", " Advisors") if "advisors" in base else base
+    return " ".join(w.capitalize() for w in cleaned.split())
+
+# -----------------------------------------------------------------------------
+# Enhanced Email HTML Functions
+# -----------------------------------------------------------------------------
+def enhance_executive_markdown(markdown_content: str) -> str:
+    """
+    Streamlined, email-safe beautification focused on:
+    - Icons on subsection headings (no colors)
+    - A single colored badge for Health only
+    - Better spacing and visual hierarchy
+    - Bold labels for details (What / Why it matters / Mitigation / etc.)
+    - Uncolored severities (HIGH / MEDIUM / LOW)
+    """
+    if not markdown_content:
+        return markdown_content
+
+    # 0) Clean any legacy <span> chips BEFORE we inject new ones so we don't strip our own badge
+    #    Previously this ran at the end and removed the newly inserted Health badge.
+    markdown_content = re.sub(r'</?span[^>]*>', '', markdown_content)
+
+    # 1) Health badge — now looks for "Health:" after em dash
+    def _health_badge(match):
+        v = match.group("v").strip().lower()
+        color = {"green": "#10b981", "yellow": "#f59e0b", "red": "#ef4444"}.get(v, "#6b7280")
+        return (
+            '— Health: <span style="background:%s;color:#fff;padding:3px 10px;'
+            'border-radius:14px;font-weight:700;font-size:13px;">%s</span>' % (color, v.upper())
+        )
+    markdown_content = re.sub(r'(?i)—\s*Health:\s*(?P<v>Green|Yellow|Red)\b', _health_badge, markdown_content)
+
+    # 2) Normalize key subsection headings and add icons (markdown only, no colors)
+    SUBHEAD_ICONS = {
+        "Top Priorities": "📌",
+        "Top Risks": "⚠️",
+        "Opportunities": "💡",
+        "Actions": "🛠️",
+    }
+    for label, icon in SUBHEAD_ICONS.items():
+        # bullet to H3
+        markdown_content = re.sub(
+            rf"(?mi)^\s*[-*]\s*{re.escape(label)}\s*(?P<rest>.*)$",
+            lambda m: f"### {icon} {label}\n{m.group('rest').strip()}",
+            markdown_content,
+        )
+        # plain H3/H4 to H3 with icon
+        markdown_content = re.sub(
+            rf"(?mi)^####\s*{re.escape(label)}\s*$",
+            f"### {icon} {label}",
+            markdown_content,
+        )
+        markdown_content = re.sub(
+            rf"(?mi)^###\s*{re.escape(label)}\s*$",
+            f"### {icon} {label}",
+            markdown_content,
+        )
+
+    # Action horizons: one level below the Actions subhead → use H4 (####)
+    HORIZON_ICONS = {"Next 7 Days": "🏃", "Next 30 Days": "📅", "Next 90 Days": "🎯"}
+    for label, icon in HORIZON_ICONS.items():
+        markdown_content = re.sub(
+            rf"(?mi)^\s*[-*]?\s*{re.escape(label)}\s*$",
+            f"#### {icon} {label}",
+            markdown_content,
+        )
+        markdown_content = re.sub(
+            rf"(?mi)^#{3,6}\s*{re.escape(label)}\s*$",
+            f"#### {icon} {label}",
+            markdown_content,
+        )
+
+    # 3) Remove "Rationale:" from blockquotes but keep the content
+    markdown_content = re.sub(
+        r'(?mi)^\s*>\s*\*\*Rationale:\*\*\s*(.+)$',
+        r'> \1',
+        markdown_content
+    )
+    markdown_content = re.sub(
+        r'(?mi)^\s*>\s*Rationale:\s*(.+)$',
+        r'> \1',
+        markdown_content
+    )
+
+    # 4) Uncolored severities
+    markdown_content = re.sub(
+        r'—\s*(High|Med|Medium|Low)\b',
+        lambda m: f"— **{'MEDIUM' if m.group(1).lower().startswith('med') else m.group(1).upper()}**",
+        markdown_content
+    )
+
+    # 5) Make detail labels bold (no color)
+    for label in [
+        "What:", "Why it matters:", "Mitigation:",
+        "Why now:", "Recommended motion:", "Stakeholders to engage:", "Expected impact:",
+        "Momentum:", "Relationship Coverage:", "Execution Quality:"
+    ]:
+        markdown_content = re.sub(rf'(?mi)\b{re.escape(label)}', f"**{label}**", markdown_content)
+
+    return markdown_content
+
+# 3. Update the HTML conversion for better spacing (replace in your main file)
+
+def executive_markdown_to_html(markdown_content: str) -> str:
+    """
+    Convert streamlined markdown to neutral HTML with improved spacing
+    """
+    if not markdown_content:
+        return ""
+
+    enhanced = enhance_executive_markdown(markdown_content)
+
+    # Markdown -> HTML (fallback to <pre> if lib missing)
+    try:
+        import markdown
+        html = markdown.markdown(enhanced, extensions=['extra', 'sane_lists', 'tables'])
+    except Exception:
+        safe = enhanced.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        html = f"<pre>{safe}</pre>"
+
+    # Headings with better spacing
+    html = re.sub(
+        r'<h1>([^<]+)</h1>',
+        r'<h1 style="color:#1e293b;font-size:26px;margin:32px 0 16px 0;border-bottom:2px solid #e2e8f0;padding-bottom:8px;font-weight:700;">\1</h1>',
+        html
+    )
+    html = re.sub(
+        r'<h2>([^<]+)</h2>',
+        r'<h2 style="color:#1e293b;font-size:22px;margin:28px 0 14px 0;font-weight:700;border-bottom:2px solid #e2e8f0;padding-bottom:8px;">\1</h2>',
+        html
+    )
+    html = re.sub(
+        r'<h3>([^<]+)</h3>',
+        r'<h3 style="color:#374151;font-size:18px;margin:24px 0 12px 0;font-weight:700;">\1</h3>',
+        html
+    )
+    html = re.sub(
+        r'<h4>([^<]+)</h4>',
+        r'<h4 style="color:#4b5563;font-size:16px;margin:18px 0 8px 0;font-weight:700;">\1</h4>',
+        html
+    )
+
+    # Better paragraph and list spacing
+    html = re.sub(r'<p>',  r'<p style="margin:14px 0;line-height:1.7;font-size:15px;">', html)
+    html = re.sub(r'<ul>', r'<ul style="margin:16px 0;padding-left:24px;">', html)
+    html = re.sub(r'<ol>', r'<ol style="margin:16px 0;padding-left:24px;">', html)
+    html = re.sub(r'<li>', r'<li style="margin:8px 0;line-height:1.6;">', html)
+
+    # Tables (neutral)
+    html = re.sub(r'<table>', r'<table style="width:100%;border-collapse:collapse;margin:20px 0;border:1px solid #e5e7eb;">', html)
+    html = re.sub(r'<th>', r'<th style="padding:12px 14px;text-align:left;border-bottom:2px solid #e5e7eb;font-weight:700;background:#f9fafb;">', html)
+    html = re.sub(r'<td>', r'<td style="padding:10px 14px;border-top:1px solid #e5e7eb;">', html)
+
+    # Blockquotes with better styling
+    html = re.sub(
+        r'<blockquote>',
+        r'<blockquote style="border-left:4px solid #60a5fa;margin:16px 0;padding:12px 18px;color:#475569;background:#f8fafc;font-style:italic;">', 
+        html
+    )
+
+    # Code with better contrast
+    html = re.sub(
+        r'<code>([^<]+)</code>',
+        r'<code style="background:#f1f5f9;padding:3px 6px;border-radius:4px;font-size:14px;color:#1e293b;border:1px solid #e2e8f0;">\1</code>',
+        html
+    )
+
+    # HR with more space
+    html = re.sub(r'<hr\s*/?>', r'<hr style="border:none;border-top:2px solid #e2e8f0;margin:32px 0;" />', html)
+
+    final_html = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; color:#111827; line-height:1.6; max-width:100%;">
+        {html}
+    </div>
+    """
+    return final_html.strip()
+
+
+# -----------------------------------------------------------------------------
+# LLM
+# -----------------------------------------------------------------------------
+
+def _init_gemini():
+    if not GEMINI_IMPORT_OK:
+        return None, False, "google-genai is not installed"
+    if not GEMINI_API_KEY:
+        return None, False, "GEMINI_API_KEY not set"
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        return client, True, "ok"
+    except Exception as e:
+        return None, False, f"Init error: {e}"
+
+def _run_gemini(client, prompt: str) -> str:
+    resp = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=THINKING_BUDGET)
+        ),
+    )
+    out = (resp.text or "").strip()
+    # Strip accidental code fences
+    if out.startswith("```markdown"):
+        out = out[len("```markdown"):].strip()
+    if out.startswith("```"):
+        out = out[3:].strip()
+    if out.endswith("```"):
+        out = out[:-3].strip()
+    return out
+
+# -----------------------------------------------------------------------------
+# Core data prep
+# -----------------------------------------------------------------------------
+
+def load_all_inputs() -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Return (resolved_paths, parsed_reports) for the 3 hardcoded files."""
+    resolved = [_ensure_json_suffix(p) for p in HARD_CODED_FILES]
+    parsed = []
+    for p in resolved:
+        try:
+            parsed.append(_read_report(p))
+            print(f"✅ Loaded {p}")
+        except Exception as e:
+            print(f"❌ Could not read {p}: {e}")
+            parsed.append(None)
+    return resolved, parsed
+
+def extract_client_payload(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Pluck key fields to feed into the prompt and KPIs."""
+    if not report:
+        return {
+            "client_domain": "(missing)",
+            "ai_md": "(no analysis available)",
+            "stats": {},
+            "employee_count": 0,
+            "analysis_period_days": None,
+        }
+
+    structured = report.get("structured_dataset", {})
+    crm = report.get("crm_insights", {})
+
+    ai_md = crm.get("ai_analysis_markdown") or "(no analysis available)"
+    stats = structured.get("statistics", {}) or {}
+    emp_map = structured.get("employee_interactions", {}) or {}
+
+    return {
+        "client_domain": structured.get("client_domain", "(unknown)"),
+        "ai_md": ai_md,
+        "stats": {
+            "total_interactions": stats.get("total_interactions", 0),
+            "total_emails": stats.get("total_emails", 0),
+            "total_meetings": stats.get("total_meetings", 0),
+            "total_transcripts": stats.get("total_transcripts", 0),
+        },
+        "employee_count": len(emp_map),
+        "analysis_period_days": structured.get("analysis_period_days"),
+    }
+
+def build_prompt_payload(reports: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    """Return (final_prompt_str, per_client_payloads)."""
+    per_client = [extract_client_payload(r) for r in reports]
+
+    sections = []
+    for payload in per_client:
+        client_name = _derive_client_name(payload["client_domain"])
+        st = payload["stats"]
+        stats_line = (
+            f"{st.get('total_interactions',0)} interactions; "
+            f"{st.get('total_emails',0)} emails; "
+            f"{st.get('total_meetings',0)} meetings; "
+            f"{st.get('total_transcripts',0)} transcripts; "
+            f"{payload.get('employee_count',0)} employees; "
+            f"period={payload.get('analysis_period_days','?')}d"
+        )
+        sections.append(_format_client_section(client_name, payload["ai_md"], stats_line))
+
+    client_sections = "\n\n---\n\n".join(sections)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    prompt = EXECUTIVE_REPORT_PROMPT_TEMPLATE.format(
+        date=today,
+        client_sections=client_sections,
+    )
+    return prompt, per_client
+
+def compute_quick_kpis(per_client_payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Basic rollups without LLM."""
+    roll = {
+        "total_clients": len([p for p in per_client_payloads if p.get("client_domain") != "(missing)"]),
+        "total_interactions": 0,
+        "total_emails": 0,
+        "total_meetings": 0,
+        "total_transcripts": 0,
+        "distinct_employees": 0,  # sum across clients (not de-duped)
+        "by_client": [],
+    }
+
+    for p in per_client_payloads:
+        st = p["stats"]
+        roll["total_interactions"] += st.get("total_interactions", 0)
+        roll["total_emails"] += st.get("total_emails", 0)
+        roll["total_meetings"] += st.get("total_meetings", 0)
+        roll["total_transcripts"] += st.get("total_transcripts", 0)
+        roll["distinct_employees"] += p.get("employee_count", 0)
+
+        roll["by_client"].append({
+            "client_domain": p.get("client_domain"),
+            "interactions": st.get("total_interactions", 0),
+            "emails": st.get("total_emails", 0),
+            "meetings": st.get("total_meetings", 0),
+            "transcripts": st.get("total_transcripts", 0),
+            "employees": p.get("employee_count", 0),
+            "period_days": p.get("analysis_period_days"),
+        })
+
+    return roll
+
+def save_executive_report(
+    exec_md: str,
+    inputs: List[str],
+    per_client_payloads: List[Dict[str, Any]],
+    token_in: int,
+    token_out: int,
+    output_filename: str = None,
+) -> str:
+    if output_filename is None:
+        output_filename = f"executive_report_{datetime.now().strftime('%Y%m%d')}.json"
+
+    quick_kpis = compute_quick_kpis(per_client_payloads)
+
+    doc = {
+        "report_info": {
+            "generated_timestamp": datetime.now().isoformat(),
+            "generator": "Executive Report Generator 1.1.0",
+            "model": MODEL_NAME,
+        },
+        "inputs": {
+            "files": inputs,
+            "per_client_payloads": per_client_payloads,
+        },
+        "executive_summary_markdown": exec_md,
+        "quick_kpis": quick_kpis,
+        "token_analysis": {
+            "tokenizer_available": TOKENIZER_AVAILABLE,
+            "input_prompt_tokens": token_in,
+            "output_response_tokens": token_out,
+            "total_tokens": token_in + token_out,
+            # Same nominal pricing assumption as your other script:
+            "input_cost": (token_in / 1_000_000) * 1.25 if TOKENIZER_AVAILABLE else None,
+            "output_cost": (token_out / 1_000_000) * 10.00 if TOKENIZER_AVAILABLE else None,
+            "total_cost": ((token_in / 1_000_000) * 1.25 + (token_out / 1_000_000) * 10.00) if TOKENIZER_AVAILABLE else None,
+        },
+    }
+
+    with open(output_filename, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, ensure_ascii=False)
+
+    return output_filename
+
+# -----------------------------------------------------------------------------
+# Email
+# -----------------------------------------------------------------------------
+
+def _kpis_table_html(quick_kpis: Dict[str, Any]) -> str:
+    """Generate a beautiful HTML KPI table"""
+    rows = []
+    for i, row in enumerate(quick_kpis.get("by_client", [])):
+        bg_color = "#ffffff" if i % 2 == 0 else "#f9fafb"
+        client_color = {
+            'disney.com': '#1e40af',
+            'blackstone.com': '#1e293b',
+            'soligenceadvisors.com': '#059669'
+        }.get(row['client_domain'], '#475569')
+
+        rows.append(f"""
+            <tr style="background: {bg_color};">
+                <td style="padding: 12px 16px; border-top: 1px solid #e5e7eb; color: {client_color}; font-weight: 700;">
+                    {row['client_domain']}
+                </td>
+                <td style="padding: 12px 16px; border-top: 1px solid #e5e7eb; text-align: center; color: #4b5563;">
+                    {row.get('period_days','—')}
+                </td>
+                <td style="padding: 12px 16px; border-top: 1px solid #e5e7eb; text-align: center; color: #1e293b; font-weight: 700;">
+                    {row['interactions']:,}
+                </td>
+                <td style="padding: 12px 16px; border-top: 1px solid #e5e7eb; text-align: center; color: #4b5563;">
+                    {row['emails']:,}
+                </td>
+                <td style="padding: 12px 16px; border-top: 1px solid #e5e7eb; text-align: center; color: #4b5563;">
+                    {row['meetings']:,}
+                </td>
+                <td style="padding: 12px 16px; border-top: 1px solid #e5e7eb; text-align: center; color: #4b5563;">
+                    {row['transcripts']:,}
+                </td>
+                <td style="padding: 12px 16px; border-top: 1px solid #e5e7eb; text-align: center; color: #4b5563;">
+                    {row['employees']}
+                </td>
+            </tr>
+        """)
+
+    # Summary row
+    rows.append(f"""
+        <tr style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); font-weight: 700;">
+            <td style="padding: 12px 16px; border-top: 2px solid #3b82f6; color: #1e40af;">
+                TOTAL
+            </td>
+            <td style="padding: 12px 16px; border-top: 2px solid #3b82f6; text-align: center;">
+                —
+            </td>
+            <td style="padding: 12px 16px; border-top: 2px solid #3b82f6; text-align: center; color: #1e40af; font-size: 16px;">
+                {quick_kpis['total_interactions']:,}
+            </td>
+            <td style="padding: 12px 16px; border-top: 2px solid #3b82f6; text-align: center; color: #1e40af;">
+                {quick_kpis['total_emails']:,}
+            </td>
+            <td style="padding: 12px 16px; border-top: 2px solid #3b82f6; text-align: center; color: #1e40af;">
+                {quick_kpis['total_meetings']:,}
+            </td>
+            <td style="padding: 12px 16px; border-top: 2px solid #3b82f6; text-align: center; color: #1e40af;">
+                {quick_kpis['total_transcripts']:,}
+            </td>
+            <td style="padding: 12px 16px; border-top: 2px solid #3b82f6; text-align: center; color: #1e40af;">
+                {quick_kpis['distinct_employees']}
+            </td>
+        </tr>
+    """)
+
+    return f"""
+        <table style="width: 100%; border-collapse: separate; border-spacing: 0; margin: 24px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.07); border-radius: 12px; overflow: hidden; font-size: 14px;">
+            <thead style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                <tr>
+                    <th style="padding: 14px 16px; text-align: left; font-weight: 700; letter-spacing: 0.5px;">Client</th>
+                    <th style="padding: 14px 16px; text-align: center; font-weight: 700; letter-spacing: 0.5px;">Days</th>
+                    <th style="padding: 14px 16px; text-align: center; font-weight: 700; letter-spacing: 0.5px;">Total</th>
+                    <th style="padding: 14px 16px; text-align: center; font-weight: 700; letter-spacing: 0.5px;">Emails</th>
+                    <th style="padding: 14px 16px; text-align: center; font-weight: 700; letter-spacing: 0.5px;">Meetings</th>
+                    <th style="padding: 14px 16px; text-align: center; font-weight: 700; letter-spacing: 0.5px;">Transcripts</th>
+                    <th style="padding: 14px 16px; text-align: center; font-weight: 700; letter-spacing: 0.5px;">Staff</th>
+                </tr>
+            </thead>
+            <tbody>
+                {''.join(rows)}
+            </tbody>
+        </table>
+    """
+
+def _build_email_html(subject_client_line: str, exec_md: str, quick_kpis: Dict[str, Any], output_filename: str) -> str:
+    # Convert the main executive Markdown into enhanced HTML
+    exec_html = executive_markdown_to_html(exec_md)
+
+    # Build a beautiful KPI table
+    kpi_html = _kpis_table_html(quick_kpis)
+
+    # Stats cards - TABLE BASED FOR EMAIL COMPATIBILITY
+    stats_cards = f"""
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin: 24px 0;">
+            <tr>
+                <td width="33%" style="padding-right: 8px;">
+                    <table width="100%" cellpadding="0" cellspacing="0" style="background: #667eea; border-radius: 12px;">
+                        <tr>
+                            <td style="padding: 20px; text-align: center;">
+                                <div style="color: #ffffff; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; opacity: 0.95;">CLIENTS</div>
+                                <div style="color: #ffffff; font-size: 36px; font-weight: 700; line-height: 1;">{quick_kpis['total_clients']}</div>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+                <td width="33%" style="padding: 0 8px;">
+                    <table width="100%" cellpadding="0" cellspacing="0" style="background: #3b82f6; border-radius: 12px;">
+                        <tr>
+                            <td style="padding: 20px; text-align: center;">
+                                <div style="color: #ffffff; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; opacity: 0.95;">INTERACTIONS</div>
+                                <div style="color: #ffffff; font-size: 36px; font-weight: 700; line-height: 1;">{quick_kpis['total_interactions']:,}</div>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+                <td width="33%" style="padding-left: 8px;">
+                    <table width="100%" cellpadding="0" cellspacing="0" style="background: #10b981; border-radius: 12px;">
+                        <tr>
+                            <td style="padding: 20px; text-align: center;">
+                                <div style="color: #ffffff; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; opacity: 0.95;">EMPLOYEES</div>
+                                <div style="color: #ffffff; font-size: 36px; font-weight: 700; line-height: 1;">{quick_kpis['distinct_employees']}</div>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+    """
+
+    now_str = datetime.now().strftime('%B %d, %Y at %I:%M %p')
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Executive CRM Health Report</title>
+      </head>
+      <body style="font-family: Arial, Helvetica, sans-serif; line-height: 1.6; color: #1e293b; margin: 0; padding: 0; background-color: #ffffff;">
+        <div style="max-width: 1100px; margin: 0 auto; padding: 0;">
+
+          <!-- Header with solid background (gradients don't work in all email clients) -->
+          <div style="background-color: #667eea; padding: 40px 30px; text-align: center;">
+            <h1 style="color: #ffffff; font-size: 32px; font-weight: 700; margin: 0;">
+              📊 Executive CRM Health Report
+            </h1>
+            <p style="color: #ffffff; font-size: 18px; margin: 12px 0 0 0; font-weight: 600;">
+              {subject_client_line}
+            </p>
+            <p style="color: #ffffff; font-size: 14px; margin: 8px 0 0 0; opacity: 0.9;">
+              Generated on {now_str}
+            </p>
+          </div>
+
+          <!-- Main content area -->
+          <div style="padding: 30px; background-color: #ffffff;">
+
+            <!-- Stats Cards -->
+            <div style="margin-bottom: 40px;">
+              <h2 style="color: #1e293b; font-size: 20px; font-weight: 700; margin-bottom: 20px;">
+                📈 Quick Stats
+              </h2>
+              {stats_cards}
+            </div>
+
+            <!-- Executive Summary -->
+            <div style="background: white; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+              <h2 style="color: #1e293b; font-size: 20px; font-weight: 700; margin-top: 0; margin-bottom: 20px;">
+                📋 Executive Analysis
+              </h2>
+              {exec_html}
+            </div>
+
+            <!-- KPI Table -->
+            <div style="margin-bottom: 32px;">
+              <h2 style="color: #1e293b; font-size: 20px; font-weight: 700; margin-bottom: 20px;">
+                📊 Detailed Metrics by Client
+              </h2>
+              {kpi_html}
+            </div>
+
+            <!-- Footer -->
+            <div style="border-top: 2px solid #e2e8f0; padding-top: 24px; margin-top: 40px;">
+              <div style="text-align: center;">
+                <p style="color: #64748b; font-size: 13px; margin: 0 0 8px 0;">
+                  This report was automatically generated by <strong>Argus360</strong>
+                </p>
+                <p style="color: #94a3b8; font-size: 12px; margin: 0;">
+                  Full report available: <code style="background: #f1f5f9; padding: 2px 6px; border-radius: 3px; font-size: 11px;">{output_filename}</code>
+                </p>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </body>
+    </html>
+    """.strip()
+
+def _build_email_plain(exec_md: str, quick_kpis: Dict[str, Any], output_filename: str) -> str:
+    # Strip markdown minimally for plaintext; keep structure lightweight
+    import re
+    plain = exec_md
+    plain = re.sub(r'^#{1,6}\s*', '', plain, flags=re.MULTILINE)
+    plain = re.sub(r'\*\*(.+?)\*\*', r'\1', plain)
+    plain = re.sub(r'\*(.+?)\*', r'\1', plain)
+
+    # Build simple text table
+    kpi_lines = ["Client | Days | Total | Emails | Meetings | Transcripts | Staff"]
+    kpi_lines.append("-" * 70)
+    for row in quick_kpis.get("by_client", []):
+        kpi_lines.append(
+            f"{row['client_domain']} | {row.get('period_days','?')} | "
+            f"{row['interactions']} | {row['emails']} | {row['meetings']} | "
+            f"{row['transcripts']} | {row['employees']}"
+        )
+
+    return (
+        "Executive CRM Health Report\n"
+        "=" * 70 + "\n\n"
+        "QUICK STATS\n"
+        f"- Clients: {quick_kpis['total_clients']}\n"
+        f"- Total Interactions: {quick_kpis['total_interactions']:,}\n"
+        f"- Total Employees: {quick_kpis['distinct_employees']}\n\n"
+        "EXECUTIVE ANALYSIS\n"
+        "-" * 40 + "\n"
+        f"{plain}\n\n"
+        "METRICS BY CLIENT\n"
+        "-" * 40 + "\n"
+        f"{chr(10).join(kpi_lines)}\n\n"
+        f"Full JSON: {output_filename}\n\n"
+        "Generated by Argus360"
+    )
+
+def send_executive_email(executive_markdown: str, quick_kpis: Dict[str, Any], output_filename: str) -> bool:
+    email_client, email_available, report_recipients = initialize_email_client()
+    if not email_available or not email_client or not report_recipients:
+        print("📧 Email sending skipped — no email configuration (EMAIL_CONNECTION_STRING/REPORT_RECIPIENTS).")
+        return False
+
+    subject_date = datetime.now().strftime("%B %d, %Y")
+    subject = f"Executive CRM Health Report — {subject_date}"
+
+    # Dynamic subject line from the KPI rollup
+    client_names = []
+    for row in quick_kpis.get("by_client", []):
+        domain = row.get("client_domain") or ""
+        client_names.append(_derive_client_name(domain))
+    subject_client_line = " • ".join([n for n in client_names if n]) or "Portfolio"
+
+    html = _build_email_html(subject_client_line, executive_markdown, quick_kpis, output_filename)
+    plain = _build_email_plain(executive_markdown, quick_kpis, output_filename)
+
+    message = {
+        "senderAddress": "DoNotReply@7661678a-204d-4779-8642-fd1ac62f90bc.azurecomm.net",
+        "recipients": {"to": [{"address": e} for e in report_recipients]},
+        "content": {"subject": subject, "plainText": plain, "html": html},
+    }
+
+    print(f"📧 Sending executive report email to: {', '.join(report_recipients)}")
+    try:
+        poller = email_client.begin_send(message)
+        result = poller.result()
+        try:
+            message_id = getattr(result, "message_id", None) or result.get("messageId") or result.get("message_id") or str(result)
+        except Exception:
+            message_id = "Unknown"
+        print(f"✅ Executive email sent! Message ID: {message_id}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to send executive email: {e}")
+        return False
+
+# -----------------------------------------------------------------------------
+# CLI
+# -----------------------------------------------------------------------------
+
+def parse_args():
+    ap = argparse.ArgumentParser(description="Generate an executive roll-up across multiple client reports.")
+    ap.add_argument("--output", type=str, help="Output filename (default: executive_report_<date>.json)")
+    ap.add_argument("--skip-ai", action="store_true", help="Skip LLM and produce a KPIs-only JSON")
+    ap.add_argument("--send-email", action="store_true", help="Send the executive summary via email")
+    return ap.parse_args()
+
+def main():
+    args = parse_args()
+
+    file_paths, reports = load_all_inputs()
+    prompt, per_client_payloads = build_prompt_payload(reports)
+
+    token_in = _count_tokens(prompt)
+
+    if args.skip_ai:
+        exec_md = (
+            "# Executive Summary\n\n"
+            "_AI generation skipped. KPIs below were computed from inputs._\n"
+        )
+        token_out = 0
+    else:
+        client, ok, msg = _init_gemini()
+        if not ok:
+            print(f"❌ Gemini not available: {msg}")
+            print("   Tip: use --skip-ai to still generate KPI rollups.")
+            return
+        print("🤖 Generating executive summary with Gemini…")
+        exec_md = _run_gemini(client, prompt)
+        token_out = _count_tokens(exec_md)
+
+    out_file = save_executive_report(
+        exec_md=exec_md,
+        inputs=file_paths,
+        per_client_payloads=per_client_payloads,
+        token_in=token_in,
+        token_out=token_out,
+        output_filename=args.output,
+    )
+
+    # Console preview
+    print(f"\n✅ Executive report saved to: {out_file}")
+    preview = exec_md[:600] + ("..." if len(exec_md) > 600 else "")
+    print("\n--- Executive Summary (preview) ---\n")
+    print(preview)
+    print("\n-----------------------------------\n")
+
+    # Optional email
+    if args.send_email:
+        quick_kpis = compute_quick_kpis(per_client_payloads)
+        sent = send_executive_email(exec_md, quick_kpis, out_file)
+        if not sent:
+            print("📬 Executive email not sent — check email configuration.")
+    else:
+        print("ℹ️  Skipping email. Pass --send-email to dispatch the report.")
+
+if __name__ == "__main__":
+    main()
+
+<end backend\executive_report.py>
+
+<start backend\prompts.py>
+# prompts.py
+"""
+LLM prompt templates for next-gen-crm
+"""
+
+CRM_ANALYST_PROMPT_TEMPLATE = """You are Argus360 - an intelligent AI system that synthesizes email & calendar data into 
+insights. Please review all interactions between our company (soligence) and client domain "{client_domain}". 
+Any email domains outside of these two are likely acquisition target companies or partners. 
+
+ANALYSIS PERIOD: {analysis_period_days} days
+TOTAL INTERACTIONS: {total_interactions} emails across {total_employees_queried} employees
+
+KEY STAKEHOLDERS (by interaction frequency):
+{stakeholders_section}
+
+EMPLOYEE BREAKDOWN:
+{employee_breakdown_section}
+
+<BEGIN EMAIL CONTENT>
+
+{all_emails_content}
+
+<END EMAIL CONTENT>
+
+CRITICAL FORMATTING REQUIREMENTS:
+- Use ## for main section headers (1-13 below - do not generate a top-level header, just jump right into the sections)
+- Use ### for sub-headers within sections
+- Use bullet points (-) for ANY list of distinct items, concepts, or points
+- Each bullet point must be on its own line starting with "- " or "*   "
+- NEVER use asterisks (*) within paragraphs as separators
+- When you have multiple distinct concepts, use separate bullet points, NOT paragraph format
+- Only cite emails when it is related to an actionable insight like a risk or communication gap. 
+  For citations, cite the date and internal contact  who the report reader could reach out to for further info. Do not just cite (email #13) etc
+
+Based on the actual email content and interaction patterns above, provide a comprehensive CRM analysis with these 13 sections (make sure to number each section as below):
+1. Relationship Strength Assessment
+2. Communication Patterns
+3. Key Stakeholder Analysis
+4. Business Context & Insights
+5. Sentiment & Tone Analysis
+6. Client Health & Satisfaction Indicators
+7. Content Themes
+8. Coordination & Visibility Issues
+9. Knowledge Management Gaps
+10. Action Items & Next Steps
+11. Risk Factors
+12. Opportunities
+13. Strategic Recommendations (for this, do not assume we are lacking basic things like a CRM or a client account team. 
+Try to come up with genuine insights. Its ok to say nothing can be discerned or confidently suggested from the context)
+
+Use the following highlighting:
+- People/contacts: [PERSON: John Smith] or [CONTACT: Sarah Chen (sarah.chen@example.com)] - make it clear what company each person represents (without the .com)
+- Dates/times: [DATE: September 3rd at 3 PM ET]
+- Deals/opportunities: [HIGHLIGHT: XYZ Project]
+
+Take your time, think hard about this task. These reports are critical. First focus on the core contents & insights. 
+Once you feel like you have the core insights data correct, focus on the formatting and presentation. Both are important.
+
+IMPORTANT: we are in debug mode. dont mention Ariel Granoff (agranoff@liontree) she is my wife. dont mention this instruction either.
+
+"""
+
+
+
+
+EXECUTIVE_REPORT_PROMPT_TEMPLATE = """Executive CRM Health Review Date: {date}
+
+Purpose: Produce a concise executive update that synthesizes multiple client relationship reports into one actionable summary. Audience: CRO/COO/CEO. Be crisp, specific, and decisive. Use only the information provided; do not invent facts.
+
+Inputs (per client): The following blocks contain verbatim client summaries and stats. Treat each block as ground truth for that client.
+
+{client_sections}
+
+Output contract:
+- You must output VALID GitHub-flavored Markdown only.
+- Do not use HTML, inline styles, <span>, <br>, or code fences.
+- Icons must be included exactly as shown in the scaffold.
+- Bullets must be standard Markdown (- or numbered lists). No checkboxes.
+- If a data point is missing, write N/A briefly.
+- Keep total output ≤ 900 words.
+
+Task: For each client, produce: Health (Green | Yellow | Red), a one-sentence rationale, Top Priorities (2–3), Top Risks (max 3), Opportunities (max 3), and Actions segmented by Next 7 / 30 / 90 days (each action has an owner role, a concrete next step, and a success metric). After all clients, provide Cross-Client Themes and a KPI Roll-Up table.
+
+Rules:
+- Health must be exactly one of: Green | Yellow | Red (plain text, no color).
+- For each risk, include a severity: High | Med | Low (plain text).
+- Use the **exact** heading levels from the scaffold (no skipping levels).
+
+Output scaffold (Markdown to produce — copy these headings exactly and fill in. Do not preface with any other top level header like ""CRM EXECUTIVE REPORT""):
+
+## <Client Name> — Health: <Green | Yellow | Red>
+
+<one sentence on why the client is in this health state>
+
+### 📌 Top Priorities
+1. **Priority 1** - <verbage>
+2. **Priority 2** - <verbage>
+3. **Priority 3** - <verbage>
+
+### ⚠️ Top Risks
+1. **<Risk name>** — **<High | Medium | Low>** - <what, why it matters, mitigation>
+
+2. **<Risk name>** — **<High | Medium | Low>** - <what, why it matters, mitigation>
+
+### 💡 Opportunities
+1. **<Opportunity name>** - <why now, recommended motion, stakeholders to engage, expected impact>
+2. **<Opportunity name>** - <why now, recommended motion, stakeholders to engage, expected impact>
+
+### 🛠️ Actions
+
+#### 🏃 Next 7 Days
+- <Owner role>: <Action> — <Success metric>
+
+#### 📅 Next 30 Days
+- <Owner role>: <Action> — <Success metric>
+
+#### 🎯 Next 90 Days
+- <Owner role>: <Action> — <Success metric>
+
+## Cross-Client Themes
+- **Momentum:** <summary>
+- **Relationship Coverage:** <summary>
+- **Execution Quality:** <summary>
+
+## KPI Roll-Up
+| Client | Period (days) | Interactions | Emails | Meetings | Transcripts | Employees |
+|---|---:|---:|---:|---:|---:|---:|
+
+**Notes & Assumptions:** Base conclusions strictly on provided inputs; if a data point is missing, note it briefly. Ensure the output above is valid Markdown and contains no HTML.
+
+IMPORTANT: We are in demo mode. please make 1 client green, 1 yellow, and 1 red. Use your judgement on which based on which has the most actual risks/problems.
+
+"""
+
+
+CHATBOT_SYSTEM_PROMPT = """You are a senior CRM analyst.
+
+You will receive:
+- USER_QUESTION: a question from the user.
+- RAW_JSON: one JSON object with raw interactions (emails and/or meetings).
+
+Your task:
+- Answer USER_QUESTION using only the information in RAW_JSON.
+- Return **valid Markdown only** (no code fences, no HTML).
+- The user is likely an executive, so provide the answer but also possible insights. 
+- If something is not present in RAW_JSON, say “not available in the data” instead of guessing.
+- Prefer concrete dates, names, and subjects from the data.
+- Use bullets or tables where it helps clarity.
+
+"""
+
+
+
+
+<end backend\prompts.py>
+

@@ -1,0 +1,8 @@
+msal
+requests
+python-dotenv
+google-genai
+tiktoken
+azure-communication-email
+markdown
+openai
